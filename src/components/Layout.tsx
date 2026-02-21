@@ -6,9 +6,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const loc = useLocation();
   const [summary, setSummary] = useState<Awaited<ReturnType<typeof api.getSummary>> | null>(null);
 
+  const shouldRefetch = loc.pathname === "/" || loc.pathname === "/config" || loc.pathname.startsWith("/images");
   useEffect(() => {
-    api.getSummary().then(setSummary).catch(() => setSummary(null));
-  }, [loc.pathname]);
+    if (shouldRefetch || !summary) api.getSummary().then(setSummary).catch(() => setSummary(null));
+  }, [shouldRefetch]);
 
   const config = summary?.config;
   const hasTrain = config?.train != null;

@@ -27,32 +27,14 @@ function getDatasetPath() {
 }
 
 function setDatasetPath(newPath) {
-  return fs.writeFile(
-    CONFIG_PATH,
-    JSON.stringify({ path: newPath }, null, 2),
-    "utf8"
-  );
+  return fs.writeFile(CONFIG_PATH, JSON.stringify({ path: newPath }, null, 2), "utf8");
 }
 
-function getReviewDir(datasetRoot) {
-  return path.join(datasetRoot, "review");
-}
-
-function getTagsDir(datasetRoot) {
-  return path.join(getReviewDir(datasetRoot), "tags");
-}
-
-function getMetadataPath(datasetRoot) {
-  return path.join(getReviewDir(datasetRoot), "metadata.json");
-}
-
-function getReviewedPath(datasetRoot) {
-  return path.join(getReviewDir(datasetRoot), "reviewed.json");
-}
-
-function getClassColorsPath(datasetRoot) {
-  return path.join(getReviewDir(datasetRoot), "class-colors.json");
-}
+function getReviewDir(datasetRoot) { return path.join(datasetRoot, "review"); }
+function getTagsDir(datasetRoot) { return path.join(getReviewDir(datasetRoot), "tags"); }
+function getMetadataPath(datasetRoot) { return path.join(getReviewDir(datasetRoot), "metadata.json"); }
+function getReviewedPath(datasetRoot) { return path.join(getReviewDir(datasetRoot), "reviewed.json"); }
+function getClassColorsPath(datasetRoot) { return path.join(getReviewDir(datasetRoot), "class-colors.json"); }
 
 async function readReviewedSet(datasetRoot) {
   try {
@@ -65,137 +47,139 @@ async function readReviewedSet(datasetRoot) {
 }
 
 async function ensureReviewDirs(datasetRoot) {
-  const reviewDir = getReviewDir(datasetRoot);
-  const tagsDir = getTagsDir(datasetRoot);
-  await fs.mkdir(reviewDir, { recursive: true });
-  await fs.mkdir(tagsDir, { recursive: true });
+  await fs.mkdir(getReviewDir(datasetRoot), { recursive: true });
+  await fs.mkdir(getTagsDir(datasetRoot), { recursive: true });
 }
+
+// ── Dataset layout detection ──────────────────────────────────────────────────
+// Supports: standard (images/train, labels/train), Roboflow (train/images, train/labels),
+// and datasets where the folder name is "valid" instead of "val".
+
+const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]);
 
 function normalizeClassNames(data) {
   const raw = data.names;
-  if (Array.isArray(raw)) {
-    return Object.fromEntries(raw.map((name, i) => [i, String(name)]));
-  }
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    return Object.fromEntries(
-      Object.entries(raw).map(([k, v]) => [parseInt(k, 10), String(v)])
-    );
-  }
-  if (data.nc != null) {
-    const n = parseInt(data.nc, 10);
-    return Object.fromEntries(Array.from({ length: n }, (_, i) => [i, `class_${i}`]));
-  }
+  if (Array.isArray(raw)) return Object.fromEntries(raw.map((name, i) => [i, String(name)]));
+  if (raw && typeof raw === "object" && !Array.isArray(raw))
+    return Object.fromEntries(Object.entries(raw).map(([k, v]) => [parseInt(k, 10), String(v)]));
+  if (data.nc != null) return Object.fromEntries(Array.from({ length: parseInt(data.nc, 10) }, (_, i) => [i, `class_${i}`]));
   return {};
 }
 
-async function parseDataYaml(datasetRoot) {
-  const yamlPath = path.join(datasetRoot, "data.yaml");
+async function dirHasImages(dir) {
   try {
-    const content = await fs.readFile(yamlPath, "utf8");
-    const data = yaml.load(content);
-    const names = normalizeClassNames(data);
-    const trainPath = typeof data.train === "string" ? data.train : (data.train && data.train[0]) || "images/train";
-    const valPath = typeof data.val === "string" ? data.val : (data.val && data.val[0]) || "images/val";
-    const testPath = typeof data.test === "string" ? data.test : (data.test && data.test[0]) || null;
-    return {
-      names,
-      train: trainPath,
-      val: valPath,
-      test: testPath,
-    };
-  } catch (e) {
-    return {
-      names: {},
-      train: "images/train",
-      val: "images/val",
-      test: null,
-    };
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return entries.some(e => e.isFile() && IMAGE_EXTS.has(path.extname(e.name).toLowerCase()));
+  } catch { return false; }
+}
+
+async function dirExists(dir) {
+  try { return (await fs.stat(dir)).isDirectory(); } catch { return false; }
+}
+
+async function findDir(datasetRoot, candidates, checkImages) {
+  for (const rel of candidates) {
+    const full = path.join(datasetRoot, rel);
+    if (checkImages ? await dirHasImages(full) : await dirExists(full)) return rel;
   }
+  return null;
 }
 
-function getLabelsPath(datasetRoot, split, imageRelPath) {
-  const base = path.basename(imageRelPath, path.extname(imageRelPath));
-  const labelsDir = path.join(datasetRoot, "labels", split);
-  return path.join(labelsDir, base + ".txt");
+let _cfgCache = null;
+let _cfgCachePath = null;
+
+async function resolveConfig(datasetRoot) {
+  if (_cfgCache && _cfgCachePath === datasetRoot) return _cfgCache;
+
+  // 1. Find and parse YAML
+  let yamlData = null;
+  for (const name of ["data.yaml", "dataset.yaml", "dataset_weighted.yaml"]) {
+    try {
+      yamlData = yaml.load(await fs.readFile(path.join(datasetRoot, name), "utf8"));
+      break;
+    } catch {}
+  }
+  const names = yamlData ? normalizeClassNames(yamlData) : {};
+
+  // 2. Probe filesystem for image directories
+  const trainImgs = await findDir(datasetRoot, ["images/train", "train/images", "train"], true);
+  const valImgs   = await findDir(datasetRoot, ["images/val", "images/valid", "valid/images", "val/images", "val", "valid"], true);
+  const testImgs  = await findDir(datasetRoot, ["images/test", "test/images", "test"], true);
+
+  // 3. Probe for label directories
+  const trainLabels = await findDir(datasetRoot, ["labels/train", "train/labels"], false);
+  const valLabels   = await findDir(datasetRoot, ["labels/val", "labels/valid", "valid/labels", "val/labels"], false);
+  const testLabels  = await findDir(datasetRoot, ["labels/test", "test/labels"], false);
+
+  const cfg = {
+    names,
+    train: trainImgs,
+    val: valImgs,
+    test: testImgs,
+    labelsDir: { train: trainLabels, val: valLabels, test: testLabels },
+  };
+  _cfgCache = cfg;
+  _cfgCachePath = datasetRoot;
+  return cfg;
 }
 
-function getSplitFromRelPath(relPath) {
-  const parts = relPath.split(path.sep);
-  if (parts[0] === "images" && parts[1]) return parts[1];
-  return "train";
+function invalidateConfigCache() {
+  _cfgCache = null;
+  _cfgCachePath = null;
+  classIndexCache = null;
+  classIndexCachePath = null;
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function listImagesInDir(dir) {
   const entries = await fs.readdir(dir, { withFileTypes: true });
-  const exts = new Set([".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]);
-  const files = [];
-  for (const e of entries) {
-    if (!e.isFile()) continue;
-    const ext = path.extname(e.name).toLowerCase();
-    if (exts.has(ext)) files.push(e.name);
-  }
-  return files.sort();
+  return entries.filter(e => e.isFile() && IMAGE_EXTS.has(path.extname(e.name).toLowerCase())).map(e => e.name).sort();
+}
+
+function activeSplits(config) {
+  return ["train", "val", "test"].filter(s => config[s]);
 }
 
 async function collectAllImages(datasetRoot, config) {
-  const splits = ["train", "val", "test"].filter((s) => config[s]);
   const result = [];
-  for (const split of splits) {
-    const imagesDir = path.join(datasetRoot, config[split]);
+  for (const split of activeSplits(config)) {
     try {
-      const files = await listImagesInDir(imagesDir);
-      for (const f of files) {
-        result.push({
-          split,
-          name: f,
-          relPath: path.join(path.basename(path.dirname(config[split])), path.basename(config[split]), f).replace(/\\/g, "/"),
-          imageRel: path.join(config[split], f).replace(/\\/g, "/"),
-        });
-      }
-    } catch (_) {}
+      const files = await listImagesInDir(path.join(datasetRoot, config[split]));
+      for (const f of files)
+        result.push({ split, name: f, relPath: path.join(config[split], f).replace(/\\/g, "/"), imageRel: path.join(config[split], f).replace(/\\/g, "/") });
+    } catch {}
   }
   return result;
 }
 
 async function countImages(datasetRoot, config) {
-  const splits = ["train", "val", "test"].filter((s) => config[s]);
   let total = 0;
-  for (const split of splits) {
-    const imagesDir = path.join(datasetRoot, config[split]);
-    try {
-      const files = await listImagesInDir(imagesDir);
-      total += files.length;
-    } catch (_) {}
+  for (const split of activeSplits(config)) {
+    try { total += (await listImagesInDir(path.join(datasetRoot, config[split]))).length; } catch {}
   }
   return total;
 }
 
 async function getImagesPaginated(datasetRoot, config, split, page, limit, reviewedFilter) {
-  const splits = split && split !== "all" ? [split].filter((s) => config[s]) : ["train", "val", "test"].filter((s) => config[s]);
+  const splits = split && split !== "all" ? [split].filter(s => config[s]) : activeSplits(config);
   const all = [];
   for (const s of splits) {
-    const imagesDir = path.join(datasetRoot, config[s]);
     try {
-      const files = await listImagesInDir(imagesDir);
+      const files = await listImagesInDir(path.join(datasetRoot, config[s]));
       for (const f of files) {
         const base = path.basename(f, path.extname(f));
-        const key = `${s}/${base}`;
-        all.push({ split: s, name: f, base, key, imageRel: path.join(config[s], f).replace(/\\/g, "/"), relPath: path.join(config[s], f).replace(/\\/g, "/") });
+        all.push({ split: s, name: f, base, key: `${s}/${base}`, imageRel: path.join(config[s], f).replace(/\\/g, "/"), relPath: path.join(config[s], f).replace(/\\/g, "/") });
       }
-    } catch (_) {}
+    } catch {}
   }
   let filtered = all;
-  if (reviewedFilter === "no") {
+  if (reviewedFilter === "no" || reviewedFilter === "yes") {
     const reviewed = await readReviewedSet(datasetRoot);
-    filtered = all.filter((img) => !reviewed.has(img.key));
-  } else if (reviewedFilter === "yes") {
-    const reviewed = await readReviewedSet(datasetRoot);
-    filtered = all.filter((img) => reviewed.has(img.key));
+    filtered = reviewedFilter === "no" ? all.filter(i => !reviewed.has(i.key)) : all.filter(i => reviewed.has(i.key));
   }
-  const total = filtered.length;
   const start = (page - 1) * limit;
-  const images = filtered.slice(start, start + limit).map(({ split: s, name, imageRel, relPath }) => ({ split: s, name, imageRel, relPath }));
-  return { images, total };
+  return { images: filtered.slice(start, start + limit).map(({ split: s, name, imageRel, relPath }) => ({ split: s, name, imageRel, relPath })), total: filtered.length };
 }
 
 let classIndexCache = null;
@@ -203,35 +187,41 @@ let classIndexCachePath = null;
 
 async function buildClassIndex(datasetRoot, config) {
   if (classIndexCache && classIndexCachePath === datasetRoot) return classIndexCache;
-  const imageClassIds = {};
-  const splits = ["train", "val", "test"].filter((s) => config[s]);
-  for (const split of splits) {
-    const imagesDir = path.join(datasetRoot, config[split]);
-    const labelsDir = path.join(datasetRoot, "labels", split);
+  const idx = {};
+  for (const split of activeSplits(config)) {
+    const labelsDir = config.labelsDir?.[split];
     let files = [];
-    try {
-      files = await listImagesInDir(imagesDir);
-    } catch (_) {}
+    try { files = await listImagesInDir(path.join(datasetRoot, config[split])); } catch {}
     for (const f of files) {
       const imageRel = path.join(config[split], f).replace(/\\/g, "/");
       const base = path.basename(f, path.extname(f));
-      const labelPath = path.join(labelsDir, base + ".txt");
       let ids = [];
-      try {
-        const content = await fs.readFile(labelPath, "utf8");
-        ids = [...new Set(content.split("\n").map((l) => l.trim().split(/\s+/)[0]).filter(Boolean).map((c) => parseInt(c, 10)))];
-      } catch (_) {}
-      imageClassIds[imageRel] = ids;
+      if (labelsDir) {
+        try {
+          const content = await fs.readFile(path.join(datasetRoot, labelsDir, base + ".txt"), "utf8");
+          ids = [...new Set(content.split("\n").map(l => l.trim().split(/\s+/)[0]).filter(Boolean).map(c => parseInt(c, 10)))];
+        } catch {}
+      }
+      idx[imageRel] = ids;
     }
   }
-  classIndexCache = imageClassIds;
+  classIndexCache = idx;
   classIndexCachePath = datasetRoot;
-  return imageClassIds;
+  return idx;
 }
 
+function splitFromImageRel(config, imageRel) {
+  for (const s of activeSplits(config)) {
+    if (imageRel.startsWith(config[s])) return s;
+  }
+  return "train";
+}
+
+// ── Routes ────────────────────────────────────────────────────────────────────
+
 app.get("/api/config", async (_req, res) => {
-  const path_ = getDatasetPath();
-  res.json({ datasetPath: path_, configured: !!path_.trim() });
+  const p = getDatasetPath();
+  res.json({ datasetPath: p, configured: !!p.trim() });
 });
 
 app.post("/api/config", async (req, res) => {
@@ -240,8 +230,7 @@ app.post("/api/config", async (req, res) => {
     if (typeof newPath !== "string") return res.status(400).json({ error: "path required" });
     await setDatasetPath(newPath.trim());
     await ensureReviewDirs(newPath.trim());
-    classIndexCache = null;
-    classIndexCachePath = null;
+    invalidateConfigCache();
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: String(e.message) });
@@ -253,20 +242,11 @@ app.get("/api/dataset/summary", async (_req, res) => {
   if (!datasetRoot.trim()) return res.json({ configured: false, classes: [], config: null, totalImages: 0, reviewedCount: 0 });
   try {
     await ensureReviewDirs(datasetRoot);
-    const config = await parseDataYaml(datasetRoot);
+    const config = await resolveConfig(datasetRoot);
     const totalImages = await countImages(datasetRoot, config);
     const reviewed = await readReviewedSet(datasetRoot);
-    const classes = Object.entries(config.names).map(([id, name]) => ({
-      id: parseInt(id, 10),
-      name: String(name),
-    })).sort((a, b) => a.id - b.id);
-    res.json({
-      configured: true,
-      classes,
-      config: { train: config.train, val: config.val, test: config.test, names: config.names },
-      totalImages,
-      reviewedCount: reviewed.size,
-    });
+    const classes = Object.entries(config.names).map(([id, name]) => ({ id: parseInt(id, 10), name: String(name) })).sort((a, b) => a.id - b.id);
+    res.json({ configured: true, classes, config: { train: config.train, val: config.val, test: config.test, names: config.names }, totalImages, reviewedCount: reviewed.size });
   } catch (e) {
     res.status(500).json({ error: String(e.message), configured: true });
   }
@@ -276,12 +256,11 @@ app.get("/api/images", async (req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.json({ images: [], total: 0 });
   try {
-    const config = await parseDataYaml(datasetRoot);
+    const config = await resolveConfig(datasetRoot);
     const split = req.query.split || "all";
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 24));
-    const reviewed = req.query.reviewed; // "yes" | "no" | omit
-    const { images, total } = await getImagesPaginated(datasetRoot, config, split, page, limit, reviewed);
+    const limit = Math.min(10000, Math.max(1, parseInt(req.query.limit, 10) || 48));
+    const { images, total } = await getImagesPaginated(datasetRoot, config, split, page, limit, req.query.reviewed);
     res.json({ images, total });
   } catch (e) {
     res.status(500).json({ images: [], total: 0 });
@@ -292,23 +271,18 @@ app.get("/api/class/:id/images", async (req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.json({ images: [], total: 0 });
   try {
-    const config = await parseDataYaml(datasetRoot);
+    const config = await resolveConfig(datasetRoot);
     const classId = parseInt(req.params.id, 10);
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 24));
     const index = await buildClassIndex(datasetRoot, config);
-    const imageRels = Object.entries(index).filter(([, ids]) => ids.includes(classId)).map(([rel]) => rel);
-    const splits = ["train", "val", "test"].filter((s) => config[s]);
-    const images = [];
-    for (const rel of imageRels) {
-      const parts = rel.split("/");
-      const name = parts[parts.length - 1];
-      const split = parts.length > 2 ? parts[1] : "train";
-      images.push({ split, name, imageRel: rel, relPath: rel });
-    }
+    const rels = Object.entries(index).filter(([, ids]) => ids.includes(classId)).map(([rel]) => rel);
+    const images = rels.map(rel => {
+      const name = path.basename(rel);
+      return { split: splitFromImageRel(config, rel), name, imageRel: rel, relPath: rel };
+    });
     const start = (page - 1) * limit;
-    const paginated = images.slice(start, start + limit);
-    res.json({ images: paginated, total: images.length });
+    res.json({ images: images.slice(start, start + limit), total: images.length });
   } catch (e) {
     res.status(500).json({ images: [], total: 0 });
   }
@@ -318,16 +292,14 @@ app.get("/api/class/:id/samples", async (req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.json({ samples: [] });
   try {
-    const config = await parseDataYaml(datasetRoot);
+    const config = await resolveConfig(datasetRoot);
     const classId = parseInt(req.params.id, 10);
     const limit = Math.min(12, Math.max(1, parseInt(req.query.limit, 10) || 8));
     const index = await buildClassIndex(datasetRoot, config);
-    const imageRels = Object.entries(index).filter(([, ids]) => ids.includes(classId)).map(([rel]) => rel).slice(0, limit);
-    const samples = imageRels.map((rel) => {
-      const parts = rel.split("/");
-      const name = parts[parts.length - 1];
-      const split = parts.length > 2 ? parts[1] : "train";
-      return { split, name, imageRel: rel, relPath: rel };
+    const rels = Object.entries(index).filter(([, ids]) => ids.includes(classId)).map(([rel]) => rel).slice(0, limit);
+    const samples = rels.map(rel => {
+      const name = path.basename(rel);
+      return { split: splitFromImageRel(config, rel), name, imageRel: rel, relPath: rel };
     });
     res.json({ samples });
   } catch (e) {
@@ -335,13 +307,17 @@ app.get("/api/class/:id/samples", async (req, res) => {
   }
 });
 
-app.get("/api/images/:split/:name", (req, res) => {
+// Serve image files — resolves the correct directory from config
+app.get("/api/images/:split/:name", async (req, res) => {
   const datasetRoot = getDatasetPath();
+  if (!datasetRoot.trim()) return res.status(404).end();
+  const config = await resolveConfig(datasetRoot);
   const { split, name } = req.params;
-  const imagePath = path.join(datasetRoot, "images", split, name);
-  res.sendFile(imagePath, (err) => {
-    if (err) res.status(404).end();
-  });
+  const imagesRel = config[split];
+  if (!imagesRel) return res.status(404).end();
+  const imagePath = path.join(datasetRoot, imagesRel, name);
+  if (!imagePath.startsWith(path.resolve(datasetRoot))) return res.status(403).end();
+  res.sendFile(imagePath, err => { if (err) res.status(404).end(); });
 });
 
 app.get("/dataset-asset/*", (req, res) => {
@@ -350,158 +326,116 @@ app.get("/dataset-asset/*", (req, res) => {
   if (!sub) return res.status(400).end();
   const full = path.join(datasetRoot, sub);
   if (!full.startsWith(path.resolve(datasetRoot))) return res.status(403).end();
-  res.sendFile(full, (err) => {
-    if (err) res.status(404).end();
-  });
+  res.sendFile(full, err => { if (err) res.status(404).end(); });
 });
 
+// Annotations (labels) — resolves label directory from config
 app.get("/api/annotations/:split/:base", async (req, res) => {
   const datasetRoot = getDatasetPath();
+  const config = await resolveConfig(datasetRoot);
   const { split, base: baseParam } = req.params;
   const base = path.basename(baseParam, path.extname(baseParam));
-  const labelPath = path.join(datasetRoot, "labels", split, base + ".txt");
+  const labelsRel = config.labelsDir?.[split];
+  if (!labelsRel) return res.json([]);
+  const labelPath = path.join(datasetRoot, labelsRel, base + ".txt");
   try {
     const content = await fs.readFile(labelPath, "utf8");
-    const lines = content.split("\n").filter((l) => l.trim());
-    const boxes = lines.map((line) => {
-      const parts = line.trim().split(/\s+/).map(Number);
-      return { classId: parts[0], x: parts[1], y: parts[2], w: parts[3], h: parts[4] };
+    const boxes = content.split("\n").filter(l => l.trim()).map(line => {
+      const p = line.trim().split(/\s+/).map(Number);
+      return { classId: p[0], x: p[1], y: p[2], w: p[3], h: p[4] };
     });
     res.json(boxes);
-  } catch {
-    res.json([]);
-  }
+  } catch { res.json([]); }
 });
 
 app.put("/api/annotations/:split/:base", async (req, res) => {
   const datasetRoot = getDatasetPath();
+  const config = await resolveConfig(datasetRoot);
   const { split, base: baseParam } = req.params;
   const base = path.basename(baseParam, path.extname(baseParam));
-  const labelsDir = path.join(datasetRoot, "labels", split);
+  const labelsRel = config.labelsDir?.[split];
+  if (!labelsRel) return res.status(400).json({ error: "no labels dir for split " + split });
+  const labelsDir = path.join(datasetRoot, labelsRel);
   await fs.mkdir(labelsDir, { recursive: true });
   const labelPath = path.join(labelsDir, base + ".txt");
   const boxes = req.body;
   if (!Array.isArray(boxes)) return res.status(400).json({ error: "array of boxes required" });
-  const lines = boxes.map((b) => `${b.classId} ${b.x} ${b.y} ${b.w} ${b.h}`).join("\n");
-  await fs.writeFile(labelPath, lines, "utf8");
+  await fs.writeFile(labelPath, boxes.map(b => `${b.classId} ${b.x} ${b.y} ${b.w} ${b.h}`).join("\n"), "utf8");
   res.json({ ok: true });
   try {
-    const metadataPath = getMetadataPath(datasetRoot);
+    const metaPath = getMetadataPath(datasetRoot);
     let meta = {};
-    try {
-      meta = JSON.parse(await fs.readFile(metadataPath, "utf8"));
-    } catch (_) {}
+    try { meta = JSON.parse(await fs.readFile(metaPath, "utf8")); } catch {}
     meta.lastSavedAnnotation = { split, base, at: new Date().toISOString() };
-    await fs.writeFile(metadataPath, JSON.stringify(meta, null, 2), "utf8");
-  } catch (_) {}
+    await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf8");
+  } catch {}
 });
 
-function tagFilePath(datasetRoot, imageRelPath) {
-  const base = path.basename(imageRelPath, path.extname(imageRelPath));
+// Tags
+function tagFilePath(datasetRoot, base) {
   return path.join(getTagsDir(datasetRoot), base + ".json");
 }
 
 app.get("/api/tags/:split/:base", async (req, res) => {
   const datasetRoot = getDatasetPath();
   const base = path.basename(req.params.base, path.extname(req.params.base));
-  const relPath = `images/${req.params.split}/${base}`;
-  const tagPath = tagFilePath(datasetRoot, relPath);
-  try {
-    const content = await fs.readFile(tagPath, "utf8");
-    res.json(JSON.parse(content));
-  } catch {
-    res.json({});
-  }
+  try { res.json(JSON.parse(await fs.readFile(tagFilePath(datasetRoot, base), "utf8"))); } catch { res.json({}); }
 });
 
 app.put("/api/tags/:split/:base", async (req, res) => {
   const datasetRoot = getDatasetPath();
   await ensureReviewDirs(datasetRoot);
   const base = path.basename(req.params.base, path.extname(req.params.base));
-  const relPath = `images/${req.params.split}/${base}`;
-  const tagPath = tagFilePath(datasetRoot, relPath);
-  const body = req.body;
-  if (typeof body !== "object" || body === null) return res.status(400).json({ error: "object required" });
-  await fs.writeFile(tagPath, JSON.stringify(body, null, 2), "utf8");
+  if (typeof req.body !== "object" || req.body === null) return res.status(400).json({ error: "object required" });
+  await fs.writeFile(tagFilePath(datasetRoot, base), JSON.stringify(req.body, null, 2), "utf8");
   res.json({ ok: true });
 });
 
+// Validation checks
 app.get("/api/validation", async (_req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.json({ checks: [] });
   try {
-    const config = await parseDataYaml(datasetRoot);
+    const config = await resolveConfig(datasetRoot);
     const images = await collectAllImages(datasetRoot, config);
-    const checks = [];
-    const missingLabels = [];
-    const emptyLabels = [];
-    const classCounts = {};
+    const missingLabels = [], emptyLabels = [], classCounts = {};
     for (const img of images) {
-      const labelPath = getLabelsPath(datasetRoot, img.split, img.imageRel);
-      let hasLabel = false;
+      const labelsRel = config.labelsDir?.[img.split];
+      if (!labelsRel) { missingLabels.push(img.imageRel); continue; }
+      const base = path.basename(img.name, path.extname(img.name));
       try {
-        const content = await fs.readFile(labelPath, "utf8");
-        const lines = content.split("\n").filter((l) => l.trim());
-        hasLabel = true;
-        if (lines.length === 0) emptyLabels.push(img.imageRel);
-        for (const line of lines) {
-          const c = parseInt(line.trim().split(/\s+/)[0], 10);
-          classCounts[c] = (classCounts[c] || 0) + 1;
-        }
-      } catch {
-        missingLabels.push(img.imageRel);
-      }
+        const content = await fs.readFile(path.join(datasetRoot, labelsRel, base + ".txt"), "utf8");
+        const lines = content.split("\n").filter(l => l.trim());
+        if (!lines.length) emptyLabels.push(img.imageRel);
+        for (const line of lines) { const c = parseInt(line.trim().split(/\s+/)[0], 10); classCounts[c] = (classCounts[c] || 0) + 1; }
+      } catch { missingLabels.push(img.imageRel); }
     }
-    checks.push({
-      id: "missing_labels",
-      name: "Images without label file",
-      count: missingLabels.length,
-      severity: missingLabels.length > 0 ? "warning" : "ok",
-      detail: missingLabels.slice(0, 20),
-    });
-    checks.push({
-      id: "empty_labels",
-      name: "Label files with no objects",
-      count: emptyLabels.length,
-      severity: "info",
-      detail: emptyLabels.slice(0, 20),
-    });
-    checks.push({
-      id: "class_balance",
-      name: "Class distribution",
-      count: Object.keys(classCounts).length,
-      severity: "ok",
-      detail: classCounts,
-    });
-    res.json({ checks });
-  } catch (e) {
-    res.status(500).json({ error: String(e.message) });
-  }
+    res.json({ checks: [
+      { id: "missing_labels", name: "Images without label file", count: missingLabels.length, severity: missingLabels.length ? "warning" : "ok", detail: missingLabels.slice(0, 20) },
+      { id: "empty_labels", name: "Label files with no objects", count: emptyLabels.length, severity: "info", detail: emptyLabels.slice(0, 20) },
+      { id: "class_balance", name: "Class distribution", count: Object.keys(classCounts).length, severity: "ok", detail: classCounts },
+    ]});
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
 
+// Metadata
 app.patch("/api/metadata", async (req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
   await ensureReviewDirs(datasetRoot);
   const metaPath = getMetadataPath(datasetRoot);
   let meta = {};
-  try {
-    meta = JSON.parse(await fs.readFile(metaPath, "utf8"));
-  } catch (_) {}
+  try { meta = JSON.parse(await fs.readFile(metaPath, "utf8")); } catch {}
   Object.assign(meta, req.body);
   await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf8");
   res.json(meta);
 });
 
+// Reviewed
 app.get("/api/reviewed", async (_req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.json({ reviewed: [] });
-  try {
-    const set = await readReviewedSet(datasetRoot);
-    res.json({ reviewed: [...set] });
-  } catch {
-    res.json({ reviewed: [] });
-  }
+  try { res.json({ reviewed: [...await readReviewedSet(datasetRoot)] }); } catch { res.json({ reviewed: [] }); }
 });
 
 app.patch("/api/reviewed", async (req, res) => {
@@ -511,72 +445,52 @@ app.patch("/api/reviewed", async (req, res) => {
   const { split, base, reviewed: mark } = req.body;
   if (!split || base == null) return res.status(400).json({ error: "split and base required" });
   const key = `${split}/${typeof base === "string" ? base.replace(/\.[^.]+$/, "") : base}`;
-  const path_ = getReviewedPath(datasetRoot);
+  const p = getReviewedPath(datasetRoot);
   let data = { reviewed: [] };
-  try {
-    data = JSON.parse(await fs.readFile(path_, "utf8"));
-    if (!Array.isArray(data.reviewed)) data.reviewed = [];
-  } catch (_) {}
+  try { data = JSON.parse(await fs.readFile(p, "utf8")); if (!Array.isArray(data.reviewed)) data.reviewed = []; } catch {}
   const set = new Set(data.reviewed);
-  if (mark) set.add(key);
-  else set.delete(key);
+  if (mark) set.add(key); else set.delete(key);
   data.reviewed = [...set];
-  await fs.writeFile(path_, JSON.stringify(data, null, 2), "utf8");
+  await fs.writeFile(p, JSON.stringify(data, null, 2), "utf8");
   res.json({ reviewed: data.reviewed });
 });
 
+// Class colors
 app.get("/api/class-colors", async (_req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.json({});
-  try {
-    const content = await fs.readFile(getClassColorsPath(datasetRoot), "utf8");
-    res.json(JSON.parse(content));
-  } catch {
-    res.json({});
-  }
+  try { res.json(JSON.parse(await fs.readFile(getClassColorsPath(datasetRoot), "utf8"))); } catch { res.json({}); }
 });
 
 app.put("/api/class-colors", async (req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
   await ensureReviewDirs(datasetRoot);
-  const body = req.body;
-  if (typeof body !== "object" || body === null) return res.status(400).json({ error: "object required" });
-  const path_ = getClassColorsPath(datasetRoot);
-  await fs.writeFile(path_, JSON.stringify(body, null, 2), "utf8");
-  res.json(body);
+  if (typeof req.body !== "object" || req.body === null) return res.status(400).json({ error: "object required" });
+  await fs.writeFile(getClassColorsPath(datasetRoot), JSON.stringify(req.body, null, 2), "utf8");
+  res.json(req.body);
 });
 
+// Delete image + label
 app.delete("/api/images/:split/:name", async (req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
+  const config = await resolveConfig(datasetRoot);
   const { split, name } = req.params;
-  const config = await parseDataYaml(datasetRoot);
-  const imagesDir = path.join(datasetRoot, config[split] || path.join("images", split));
-  const imagePath = path.join(imagesDir, name);
-  const base = path.basename(name, path.extname(name));
-  const labelsDir = path.join(datasetRoot, "labels", split);
-  const labelPath = path.join(labelsDir, base + ".txt");
+  const imagesRel = config[split];
+  if (!imagesRel) return res.status(404).json({ error: "split not found" });
+  const imagePath = path.join(datasetRoot, imagesRel, name);
   if (!imagePath.startsWith(path.resolve(datasetRoot))) return res.status(403).json({ error: "forbidden" });
-  try {
-    await fs.unlink(imagePath);
-  } catch (e) {
-    if (e.code !== "ENOENT") return res.status(500).json({ error: String(e.message) });
-  }
-  try {
-    await fs.unlink(labelPath);
-  } catch (_) {}
+  const base = path.basename(name, path.extname(name));
+  try { await fs.unlink(imagePath); } catch (e) { if (e.code !== "ENOENT") return res.status(500).json({ error: String(e.message) }); }
+  const labelsRel = config.labelsDir?.[split];
+  if (labelsRel) { try { await fs.unlink(path.join(datasetRoot, labelsRel, base + ".txt")); } catch {} }
   const key = `${split}/${base}`;
-  const reviewedPath = getReviewedPath(datasetRoot);
   try {
-    const data = JSON.parse(await fs.readFile(reviewedPath, "utf8"));
-    if (Array.isArray(data.reviewed)) {
-      data.reviewed = data.reviewed.filter((k) => k !== key);
-      await fs.writeFile(reviewedPath, JSON.stringify(data, null, 2), "utf8");
-    }
-  } catch (_) {}
-  classIndexCache = null;
-  classIndexCachePath = null;
+    const d = JSON.parse(await fs.readFile(getReviewedPath(datasetRoot), "utf8"));
+    if (Array.isArray(d.reviewed)) { d.reviewed = d.reviewed.filter(k => k !== key); await fs.writeFile(getReviewedPath(datasetRoot), JSON.stringify(d, null, 2), "utf8"); }
+  } catch {}
+  invalidateConfigCache();
   res.json({ ok: true });
 });
 

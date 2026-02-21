@@ -12,7 +12,7 @@ export default function ImagesPage() {
   const [page, setPage] = useState(0);
   const [images, setImages] = useState<ImageItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filterReviewed, setFilterReviewed] = useState<"all" | "no">("no");
+  const [filterReviewed, setFilterReviewed] = useState<"all" | "no">("all");
 
   const effectiveSplit = split === "all" || !split ? "all" : split;
 
@@ -21,22 +21,10 @@ export default function ImagesPage() {
   }, []);
 
   useEffect(() => {
-    if (!summary?.configured) {
-      setLoading(false);
-      return;
-    }
+    if (!summary?.configured) { setLoading(false); return; }
     setLoading(true);
-    api
-      .getImages({
-        split: effectiveSplit,
-        page: page + 1,
-        limit: PAGE_SIZE,
-        reviewed: filterReviewed === "no" ? "no" : undefined,
-      })
-      .then((r) => {
-        setImages(r.images);
-        setTotal(r.total);
-      })
+    api.getImages({ split: effectiveSplit, page: page + 1, limit: PAGE_SIZE, reviewed: filterReviewed === "no" ? "no" : undefined })
+      .then(r => { setImages(r.images); setTotal(r.total); })
       .finally(() => setLoading(false));
   }, [summary?.configured, effectiveSplit, page, filterReviewed]);
 
@@ -64,32 +52,19 @@ export default function ImagesPage() {
           </h1>
           <span style={{ color: "var(--color-text-muted)", fontSize: "0.9rem" }}>
             {total} images
-            {effectiveSplit !== "all" && summary && (
-              <span style={{ marginLeft: "0.5rem" }}>
-                · <strong style={{ color: "var(--color-text)" }}>{pctReviewed}%</strong> reviewed ({reviewedCount} / {totalImages})
-              </span>
-            )}
+            <span style={{ marginLeft: "0.5rem" }}>· <strong style={{ color: "var(--color-text)" }}>{pctReviewed}%</strong> reviewed ({reviewedCount} / {totalImages})</span>
           </span>
           <label style={{ display: "flex", alignItems: "center", gap: "0.35rem", fontSize: "0.9rem" }}>
-            <input
-              type="checkbox"
-              checked={filterReviewed === "no"}
-              onChange={(e) => { setFilterReviewed(e.target.checked ? "no" : "all"); setPage(0); }}
-            />
+            <input type="checkbox" checked={filterReviewed === "no"} onChange={e => { setFilterReviewed(e.target.checked ? "no" : "all"); setPage(0); }} />
             Not reviewed only
           </label>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          <button className="btn btn-ghost" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Previous</button>
+          <button className="btn btn-ghost" disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))}>Previous</button>
           <span style={{ fontSize: "0.9rem", color: "var(--color-text-muted)" }}>Page {page + 1} of {totalPages}</span>
-          <button className="btn btn-ghost" disabled={page >= totalPages - 1} onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}>Next</button>
+          <button className="btn btn-ghost" disabled={page >= totalPages - 1} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}>Next</button>
         </div>
       </div>
-      {summary && (
-        <div style={{ fontSize: "0.9rem", color: "var(--color-text-muted)" }}>
-          Dataset: <strong style={{ color: "var(--color-text)" }}>{pctReviewed}%</strong> reviewed overall ({reviewedCount} / {totalImages} images).
-        </div>
-      )}
       {loading ? (
         <p style={{ color: "var(--color-text-muted)" }}>Loading…</p>
       ) : (
@@ -98,7 +73,7 @@ export default function ImagesPage() {
             <Link
               key={img.imageRel}
               to={`/image/${encodeURIComponent(img.split)}/${encodeURIComponent(img.name)}`}
-              state={{ list: images, index: idx, fromSplit: effectiveSplit }}
+              state={{ fromSplit: effectiveSplit, filterReviewed: filterReviewed === "no" ? "no" : undefined, startIndex: page * PAGE_SIZE + idx }}
               className="card"
               style={{ padding: 0, overflow: "hidden", textDecoration: "none", color: "inherit" }}
             >
