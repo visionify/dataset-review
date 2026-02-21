@@ -1,0 +1,5 @@
+node_modules
+dist
+dataset-path.json
+.env
+*.log
