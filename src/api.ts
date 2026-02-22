@@ -44,6 +44,9 @@ export interface DatasetSummary {
   config: { train: string; val: string; test: string | null; names: Record<number, string> } | null;
   totalImages: number;
   reviewedCount?: number;
+  splitCounts?: Record<string, number>;
+  missingLabelsCount?: number;
+  emptyLabelsCount?: number;
 }
 
 export const api = {

@@ -30,6 +30,7 @@ export default function ImageDetailPage() {
   const [showTags, setShowTags] = useState(false);
   const [tagList, setTagList] = useState<[string, string][]>([]);
   const [deleting, setDeleting] = useState(false);
+  const [isReviewed, setIsReviewed] = useState(false);
   const boxesRef = useRef(boxes);
   boxesRef.current = boxes;
 
@@ -81,16 +82,19 @@ export default function ImageDetailPage() {
   const hasPrev = currentIdx > 0;
   const hasNext = currentIdx < allImages.length - 1;
 
-  // Load annotations + tags when image changes
+  // Load annotations + tags + reviewed status when image changes
   useEffect(() => {
     if (!currentImage) return;
     const s = currentImage.split;
     const b = imageBase(currentImage.name);
     setSelectedIndex(null);
-    Promise.all([api.getAnnotations(s, b), api.getTags(s, b)]).then(([ann, t]) => {
+    setIsReviewed(false);
+    Promise.all([api.getAnnotations(s, b), api.getTags(s, b), api.getReviewed()]).then(([ann, t, rev]) => {
       setBoxes(ann);
       const tagObj = (t && typeof t === "object" && !Array.isArray(t)) ? t as Record<string, unknown> : {};
       setTagList(Object.entries(tagObj).map(([k, v]) => [k, String(v ?? "")]));
+      const key = `${s}/${b}`;
+      setIsReviewed(rev.reviewed.includes(key));
     }).catch(() => { setBoxes([]); setTagList([]); });
     // Update URL to match current image (without full page reload)
     const url = `/image/${encodeURIComponent(s)}/${encodeURIComponent(currentImage.name)}`;
@@ -101,6 +105,7 @@ export default function ImageDetailPage() {
   const markReviewed = useCallback(() => {
     if (!currentImage) return;
     api.setReviewed(currentImage.split, imageBase(currentImage.name), true).catch(() => {});
+    setIsReviewed(true);
   }, [currentImage]);
 
   const saveAnnotations = useCallback(async () => {
@@ -266,6 +271,10 @@ export default function ImageDetailPage() {
         <button className="btn btn-ghost" style={{ padding: "0.3rem 0.5rem" }} onClick={goNext} disabled={!hasNext}>→</button>
 
         <span style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>{pctReviewed}%</span>
+        <label style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.8rem", color: isReviewed ? "var(--color-success)" : "var(--color-text-muted)", cursor: "pointer" }} title="Mark as reviewed">
+          <input type="checkbox" checked={isReviewed} onChange={e => { const v = e.target.checked; setIsReviewed(v); if (currentImage) api.setReviewed(currentImage.split, imageBase(currentImage.name), v).catch(() => {}); }} />
+          Reviewed
+        </label>
 
         <select className="input" style={{ width: "auto", padding: "0.3rem 0.4rem", maxWidth: "120px" }} value={defaultClassId} onChange={e => setDefaultClassId(parseInt(e.target.value, 10))} title="Class for new boxes">
           {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}

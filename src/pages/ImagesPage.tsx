@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api } from "@/api";
+import { api, imageBase } from "@/api";
 import type { ImageItem } from "@/types";
 
 const PAGE_SIZE = 48;
@@ -13,11 +13,13 @@ export default function ImagesPage() {
   const [images, setImages] = useState<ImageItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterReviewed, setFilterReviewed] = useState<"all" | "no">("all");
+  const [reviewedSet, setReviewedSet] = useState<Set<string>>(new Set());
 
   const effectiveSplit = split === "all" || !split ? "all" : split;
 
   useEffect(() => {
     api.getSummary().then(setSummary).catch(() => setSummary(null));
+    api.getReviewed().then(r => setReviewedSet(new Set(r.reviewed))).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -68,21 +70,28 @@ export default function ImagesPage() {
       {loading ? (
         <p style={{ color: "var(--color-text-muted)" }}>Loading…</p>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: "0.5rem" }}>
-          {images.map((img, idx) => (
-            <Link
-              key={img.imageRel}
-              to={`/image/${encodeURIComponent(img.split)}/${encodeURIComponent(img.name)}`}
-              state={{ fromSplit: effectiveSplit, filterReviewed: filterReviewed === "no" ? "no" : undefined, startIndex: page * PAGE_SIZE + idx }}
-              className="card"
-              style={{ padding: 0, overflow: "hidden", textDecoration: "none", color: "inherit" }}
-            >
-              <div style={{ aspectRatio: "1", background: "var(--color-border)" }}>
-                <img src={api.imageUrl(img.split, img.name)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} loading="lazy" />
-              </div>
-              <div style={{ padding: "0.25rem 0.4rem", fontSize: "0.75rem", color: "var(--color-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{img.name}</div>
-            </Link>
-          ))}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "0.6rem" }}>
+          {images.map((img, idx) => {
+            const key = `${img.split}/${imageBase(img.name)}`;
+            const isReviewed = reviewedSet.has(key);
+            return (
+              <Link
+                key={img.imageRel}
+                to={`/image/${encodeURIComponent(img.split)}/${encodeURIComponent(img.name)}`}
+                state={{ fromSplit: effectiveSplit, filterReviewed: filterReviewed === "no" ? "no" : undefined, startIndex: page * PAGE_SIZE + idx }}
+                className="card"
+                style={{ padding: 0, overflow: "hidden", textDecoration: "none", color: "inherit", position: "relative" }}
+              >
+                <div style={{ aspectRatio: "1", background: "var(--color-border)" }}>
+                  <img src={api.imageUrl(img.split, img.name)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} loading="lazy" />
+                </div>
+                {isReviewed && (
+                  <span style={{ position: "absolute", top: 4, right: 4, background: "rgba(34,197,94,0.85)", color: "#fff", borderRadius: "50%", width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.8rem", fontWeight: 700, lineHeight: 1 }} title="Reviewed">✓</span>
+                )}
+                <div style={{ padding: "0.3rem 0.4rem", fontSize: "0.75rem", color: "var(--color-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{img.name}</div>
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>

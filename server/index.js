@@ -239,14 +239,29 @@ app.post("/api/config", async (req, res) => {
 
 app.get("/api/dataset/summary", async (_req, res) => {
   const datasetRoot = getDatasetPath();
-  if (!datasetRoot.trim()) return res.json({ configured: false, classes: [], config: null, totalImages: 0, reviewedCount: 0 });
+  if (!datasetRoot.trim()) return res.json({ configured: false, classes: [], config: null, totalImages: 0, reviewedCount: 0, splitCounts: {}, missingLabelsCount: 0, emptyLabelsCount: 0 });
   try {
     await ensureReviewDirs(datasetRoot);
     const config = await resolveConfig(datasetRoot);
-    const totalImages = await countImages(datasetRoot, config);
     const reviewed = await readReviewedSet(datasetRoot);
     const classes = Object.entries(config.names).map(([id, name]) => ({ id: parseInt(id, 10), name: String(name) })).sort((a, b) => a.id - b.id);
-    res.json({ configured: true, classes, config: { train: config.train, val: config.val, test: config.test, names: config.names }, totalImages, reviewedCount: reviewed.size });
+    const splitCounts = {};
+    let totalImages = 0;
+    for (const s of activeSplits(config)) {
+      try { const c = (await listImagesInDir(path.join(datasetRoot, config[s]))).length; splitCounts[s] = c; totalImages += c; } catch { splitCounts[s] = 0; }
+    }
+    let missingLabelsCount = 0, emptyLabelsCount = 0;
+    const images = await collectAllImages(datasetRoot, config);
+    for (const img of images) {
+      const labelsRel = config.labelsDir?.[img.split];
+      if (!labelsRel) { missingLabelsCount++; continue; }
+      const base = path.basename(img.name, path.extname(img.name));
+      try {
+        const content = await fs.readFile(path.join(datasetRoot, labelsRel, base + ".txt"), "utf8");
+        if (!content.split("\n").filter(l => l.trim()).length) emptyLabelsCount++;
+      } catch { missingLabelsCount++; }
+    }
+    res.json({ configured: true, classes, config: { train: config.train, val: config.val, test: config.test, names: config.names }, totalImages, reviewedCount: reviewed.size, splitCounts, missingLabelsCount, emptyLabelsCount });
   } catch (e) {
     res.status(500).json({ error: String(e.message), configured: true });
   }
@@ -401,18 +416,18 @@ app.get("/api/validation", async (_req, res) => {
     const missingLabels = [], emptyLabels = [], classCounts = {};
     for (const img of images) {
       const labelsRel = config.labelsDir?.[img.split];
-      if (!labelsRel) { missingLabels.push(img.imageRel); continue; }
+      if (!labelsRel) { missingLabels.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath }); continue; }
       const base = path.basename(img.name, path.extname(img.name));
       try {
         const content = await fs.readFile(path.join(datasetRoot, labelsRel, base + ".txt"), "utf8");
         const lines = content.split("\n").filter(l => l.trim());
-        if (!lines.length) emptyLabels.push(img.imageRel);
+        if (!lines.length) emptyLabels.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath });
         for (const line of lines) { const c = parseInt(line.trim().split(/\s+/)[0], 10); classCounts[c] = (classCounts[c] || 0) + 1; }
-      } catch { missingLabels.push(img.imageRel); }
+      } catch { missingLabels.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath }); }
     }
     res.json({ checks: [
-      { id: "missing_labels", name: "Images without label file", count: missingLabels.length, severity: missingLabels.length ? "warning" : "ok", detail: missingLabels.slice(0, 20) },
-      { id: "empty_labels", name: "Label files with no objects", count: emptyLabels.length, severity: "info", detail: emptyLabels.slice(0, 20) },
+      { id: "missing_labels", name: "Images without label file", count: missingLabels.length, severity: missingLabels.length ? "warning" : "ok", detail: missingLabels },
+      { id: "empty_labels", name: "Label files with no objects", count: emptyLabels.length, severity: "info", detail: emptyLabels },
       { id: "class_balance", name: "Class distribution", count: Object.keys(classCounts).length, severity: "ok", detail: classCounts },
     ]});
   } catch (e) { res.status(500).json({ error: String(e.message) }); }

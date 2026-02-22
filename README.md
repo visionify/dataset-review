@@ -1,63 +1,94 @@
 # YOLO Dataset Review
 
-A local Vite + React app to inspect and review YOLO-format datasets before training. Runs on your desktop with a small Node backend for file access.
+Local web app for reviewing, annotating, and cleaning YOLO-format datasets. React + Vite frontend, Express backend for filesystem access.
 
-## Features
-
-- **Dataset path**: Set the absolute path to your YOLO dataset (with `data.yaml`, `images/`, `labels/`).
-- **Classes**: List all classes and sample images per class from your labels.
-- **Class detail**: View all images that contain a given class, in grid or list, with pagination.
-- **All images**: Browse all dataset images in a grid with pagination.
-- **Image detail**: Open a single image with bounding-box overlay, prev/next pagination, edit and save annotations (YOLO format), and tags (day/night, camera, client).
-- **Validation**: Pre-training checks: images without label files, empty label files, class distribution.
-- **Review folder**: Tags and metadata are stored under `dataset/review/` so you can version or share them separately.
-
-## Quick start
+## Setup
 
 ```bash
 npm install
-npm run dev
+npm run dev          # starts both API server (:3456) and Vite dev server (:5173)
 ```
 
-- Open http://localhost:5173
-- Go to **Dataset path**, enter the absolute path to your YOLO dataset, then **Save path**.
-- Use **Classes** to browse by class, **All images** for a full grid, and **Validation** for checks.
+Open http://localhost:5173, go to **Dataset**, paste your dataset's absolute path (or drag-drop the folder).
+
+### Scripts
+
+| Command | What it does |
+|---|---|
+| `npm run dev` | API + Vite (concurrently) |
+| `npm run dev:server` | API only (port 3456) |
+| `npm run dev:vite` | Vite only (port 5173) |
+| `npm run build` | TypeScript check + Vite production build |
 
 ## Dataset layout
 
-Your dataset should look like:
+Supports both standard and Roboflow-style structures. The server auto-detects `data.yaml` / `dataset.yaml` / `dataset_weighted.yaml` and probes common directory patterns.
 
 ```
 /path/to/dataset/
-├── data.yaml          # classes and train/val paths
-├── images/
-│   ├── train/
-│   └── val/
-├── labels/
-│   ├── train/
-│   └── val/
-└── review/            # created by this app
-    ├── metadata.json  # last-saved info, optional stats
-    └── tags/          # one JSON per image (by base name)
-        ├── image1.json
-        └── ...
+├── data.yaml              # or dataset.yaml
+├── images/train/           # or train/images/
+├── images/val/             # or valid/images/
+├── labels/train/           # or train/labels/
+├── labels/val/             # or valid/labels/
+└── review/                 # created by this app
+    ├── reviewed.json       # set of reviewed image keys
+    ├── class-colors.json   # user-configured class colors
+    ├── metadata.json
+    └── tags/               # per-image JSON tags
 ```
 
-## Review folder (`dataset/review/`)
+## Architecture
 
-- **`tags/<image_base>.json`**: Per-image tags, e.g. `{ "day": true, "night": false, "camera": "cam1", "client": "acme" }`. Same base name as the image (no extension).
-- **`metadata.json`**: App metadata (e.g. last saved annotation, timestamps). You can extend this for your own notes.
+```
+server/index.js          Express API — file I/O, YAML parsing, image/label CRUD
+src/
+  api.ts                 Typed fetch wrappers for all API endpoints
+  types.ts               Shared TypeScript interfaces
+  classColors.ts         Default color palette
+  components/
+    Layout.tsx           App shell — header, nav tabs
+    BBoxCanvas.tsx       Image viewer + SVG bbox drawing/resizing
+  pages/
+    ClassesPage.tsx      Dashboard — stats, class cards with samples
+    ImagesPage.tsx       Paginated image grid per split (train/val/test/all)
+    ImageDetailPage.tsx  Single-image annotation view
+    ValidationPage.tsx   Missing labels, empty labels, class distribution
+    ConfigPage.tsx       Set dataset path (paste or drag-drop)
+    SettingsPage.tsx     Class color configuration
+    ClassDetailPage.tsx  All images for one class
+```
 
-You can keep `review/` in git or copy it between machines without touching the original images/labels if needed.
+## Keyboard shortcuts (annotation view)
 
-## Environment
+| Key | Action |
+|---|---|
+| `← →` | Auto-save, mark reviewed, navigate prev/next |
+| `Space` | Mark reviewed and go to next (thumbs-up) |
+| `D` | Delete selected bounding box |
+| `C` | Cycle selected box's class |
+| `Delete` | Delete selected box, or delete image if no box selected |
+| `0-9` | Set selected box's class |
+| `Ctrl+S` | Manual save |
+| `T` | Toggle tags panel |
+| Double-click bbox | Cycle class |
 
-- **`DATASET_PATH`**: Optional default dataset path. Overridden by the path saved in the app (stored in project `dataset-path.json`).
+## API endpoints
 
-## Scripts
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/config` | Current dataset path |
+| POST | `/api/config` | Set dataset path |
+| GET | `/api/dataset/summary` | Stats: classes, counts, reviewed |
+| GET | `/api/images?split=&page=&limit=&reviewed=` | Paginated image list |
+| GET | `/api/images/:split/:name` | Serve image file |
+| DELETE | `/api/images/:split/:name` | Delete image + label |
+| GET/PUT | `/api/annotations/:split/:base` | YOLO bbox annotations |
+| GET/PUT | `/api/tags/:split/:base` | Per-image tags |
+| GET/PATCH | `/api/reviewed` | Reviewed image tracking |
+| GET/PUT | `/api/class-colors` | Custom class colors |
+| GET | `/api/validation` | Missing labels, empty labels, class balance |
 
-- `npm run dev` – start API server and Vite dev server
-- `npm run dev:vite` – Vite only (no API)
-- `npm run dev:server` – API only (port 3456)
-- `npm run build` – build frontend
-- `npm run preview` – preview production build
+## Review data
+
+All review state is stored in `<dataset>/review/` — safe to commit, copy between machines, or delete to reset without touching original images/labels.

@@ -35,46 +35,65 @@ export default function ClassesPage() {
     return (
       <div className="card" style={{ padding: "1.5rem", maxWidth: "28rem" }}>
         <p style={{ marginBottom: "1rem" }}>No dataset set. Open Dataset to choose a folder.</p>
-        <Link to="/config" className="btn btn-primary">
-          Open Dataset
-        </Link>
+        <Link to="/config" className="btn btn-primary">Open Dataset</Link>
       </div>
     );
   }
 
   const classes = summary.classes ?? [];
+  const totalImages = summary.totalImages ?? 0;
+  const reviewedCount = summary.reviewedCount ?? 0;
+  const pctReviewed = totalImages ? Math.round((reviewedCount / totalImages) * 100) : 0;
+  const splitCounts = summary.splitCounts ?? {};
+  const missingLabels = summary.missingLabelsCount ?? 0;
+  const emptyLabels = summary.emptyLabelsCount ?? 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "1rem" }}>
-        <h1 style={{ fontSize: "1.5rem" }}>Classes</h1>
+        <h1 style={{ fontSize: "1.5rem" }}>Dashboard</h1>
         <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
-          <span style={{ color: "var(--color-text-muted)", fontSize: "0.9rem" }}>
-            {classes.length} classes · {summary.totalImages} images
-          </span>
-          <Link to="/validation" className="btn btn-ghost">
-            Validation
-          </Link>
+          <Link to="/validation" className="btn btn-ghost">Validation checks</Link>
         </div>
       </div>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-          gap: "1rem",
-        }}
-      >
+      {/* Stats cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "0.75rem" }}>
+        <StatCard label="Total images" value={totalImages} />
+        <StatCard label="Reviewed" value={`${reviewedCount} (${pctReviewed}%)`} color="var(--color-success)" />
+        <StatCard label="Remaining" value={totalImages - reviewedCount} color="var(--color-text-muted)" />
+        {Object.entries(splitCounts).map(([s, c]) => (
+          <StatCard key={s} label={s === "train" ? "Training" : s === "val" ? "Validation" : s === "test" ? "Test" : s} value={c as number} />
+        ))}
+        <StatCard label="Missing labels" value={missingLabels} color={missingLabels > 0 ? "var(--color-warning)" : "var(--color-success)"} link="/validation" />
+        <StatCard label="Empty labels" value={emptyLabels} color={emptyLabels > 0 ? "var(--color-warning)" : "var(--color-success)"} link="/validation" />
+        <StatCard label="Classes" value={classes.length} />
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ background: "var(--color-border)", borderRadius: 6, height: 10, overflow: "hidden" }}>
+        <div style={{ width: `${pctReviewed}%`, height: "100%", background: "var(--color-success)", borderRadius: 6, transition: "width 0.3s" }} />
+      </div>
+
+      <h2 style={{ fontSize: "1.2rem", marginTop: "0.5rem" }}>Classes</h2>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
         {classes.map((cls) => (
-          <ClassCard
-            key={cls.id}
-            cls={cls}
-            samples={samplesByClass[cls.id] ?? []}
-          />
+          <ClassCard key={cls.id} cls={cls} samples={samplesByClass[cls.id] ?? []} />
         ))}
       </div>
     </div>
   );
+}
+
+function StatCard({ label, value, color, link }: { label: string; value: string | number; color?: string; link?: string }) {
+  const content = (
+    <div className="card" style={{ padding: "0.75rem 1rem", display: "flex", flexDirection: "column", gap: "0.25rem", cursor: link ? "pointer" : undefined }}>
+      <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{label}</span>
+      <span style={{ fontSize: "1.3rem", fontWeight: 700, color: color ?? "var(--color-text)" }}>{value}</span>
+    </div>
+  );
+  if (link) return <Link to={link} style={{ textDecoration: "none", color: "inherit" }}>{content}</Link>;
+  return content;
 }
 
 function ClassCard({ cls, samples }: { cls: ClassItem; samples: ImageItem[] }) {
@@ -84,15 +103,7 @@ function ClassCard({ cls, samples }: { cls: ClassItem; samples: ImageItem[] }) {
         <h2 style={{ fontSize: "1rem", fontWeight: 600 }}>{cls.name}</h2>
         <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>id {cls.id}</span>
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
-          gap: "4px",
-          borderRadius: "var(--radius-sm)",
-          overflow: "hidden",
-        }}
-      >
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "4px", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
         {samples.slice(0, 8).map((img, idx) => (
           <Link
             key={img.imageRel}
@@ -100,23 +111,12 @@ function ClassCard({ cls, samples }: { cls: ClassItem; samples: ImageItem[] }) {
             state={{ list: samples, index: idx, classId: String(cls.id) }}
             style={{ aspectRatio: "1", display: "block", background: "var(--color-border)" }}
           >
-            <img
-              src={api.imageUrl(img.split, img.name)}
-              alt=""
-              style={{ width: "100%", height: "100%", objectFit: "cover" }}
-              loading="lazy"
-            />
+            <img src={api.imageUrl(img.split, img.name)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} loading="lazy" />
           </Link>
         ))}
       </div>
       <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-        <Link
-          to={`/class/${cls.id}`}
-          className="btn btn-ghost"
-          style={{ fontSize: "0.85rem", padding: "0.35rem 0.6rem" }}
-        >
-          View all
-        </Link>
+        <Link to={`/class/${cls.id}`} className="btn btn-ghost" style={{ fontSize: "0.85rem", padding: "0.35rem 0.6rem" }}>View all</Link>
       </div>
     </div>
   );

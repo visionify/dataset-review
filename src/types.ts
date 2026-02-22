@@ -47,5 +47,5 @@ export interface ValidationCheck {
   name: string;
   count: number;
   severity: "ok" | "warning" | "info";
-  detail: string[] | Record<string, number>;
+  detail: string[] | ImageItem[] | Record<string, number>;
 }
