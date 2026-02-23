@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useParams, useLocation, useNavigate } from "react-router-dom";
 import { api, imageBase } from "@/api";
+import type { PredictionBox } from "@/api";
 import { BBoxCanvas } from "@/components/BBoxCanvas";
 import type { BBox, ImageItem, ClassItem } from "@/types";
 
@@ -31,6 +32,10 @@ export default function ImageDetailPage() {
   const [tagList, setTagList] = useState<[string, string][]>([]);
   const [deleting, setDeleting] = useState(false);
   const [isReviewed, setIsReviewed] = useState(false);
+  const [predictions, setPredictions] = useState<PredictionBox[]>([]);
+  const [detecting, setDetecting] = useState(false);
+  const [modelReady, setModelReady] = useState(false);
+  const [confidence, setConfidence] = useState(0.25);
   const boxesRef = useRef(boxes);
   boxesRef.current = boxes;
 
@@ -47,10 +52,11 @@ export default function ImageDetailPage() {
     } catch {}
   }, []);
 
-  // Load summary + class colors once
+  // Load summary + class colors + model health once
   useEffect(() => {
     api.getSummary().then((s) => { setClasses(s.classes ?? []); setSummary(s); }).catch(() => {});
     api.getClassColors().then((c) => setClassColors(c || {})).catch(() => setClassColors({}));
+    api.inferenceHealth().then(h => setModelReady(h.model_loaded)).catch(() => setModelReady(false));
   }, []);
 
   // Load full image list for the split — this enables seamless navigation
@@ -89,6 +95,7 @@ export default function ImageDetailPage() {
     const b = imageBase(currentImage.name);
     setSelectedIndex(null);
     setIsReviewed(false);
+    setPredictions([]);
     Promise.all([api.getAnnotations(s, b), api.getTags(s, b), api.getReviewed()]).then(([ann, t, rev]) => {
       setBoxes(ann);
       const tagObj = (t && typeof t === "object" && !Array.isArray(t)) ? t as Record<string, unknown> : {};
@@ -197,6 +204,30 @@ export default function ImageDetailPage() {
     setDefaultClassId(classId);
   }, [selectedIndex, setDefaultClassId]);
 
+  const handleAutoDetect = useCallback(async () => {
+    if (!currentImage) return;
+    setDetecting(true);
+    try {
+      const r = await api.inferencePredict(currentImage.split, currentImage.name, confidence);
+      setPredictions(r.boxes);
+      if (!r.boxes.length) { setMessage("No detections."); setTimeout(() => setMessage(null), 2000); }
+    } catch (e) { setMessage(e instanceof Error ? e.message : "Detection failed"); setTimeout(() => setMessage(null), 3000); }
+    finally { setDetecting(false); }
+  }, [currentImage, confidence]);
+
+  const acceptPrediction = useCallback((index: number) => {
+    const pred = predictions[index];
+    if (!pred) return;
+    setBoxes(prev => [...prev, { classId: pred.classId, x: pred.x, y: pred.y, w: pred.w, h: pred.h }]);
+    setPredictions(prev => prev.filter((_, i) => i !== index));
+  }, [predictions]);
+
+  const acceptAllPredictions = useCallback(() => {
+    const newBoxes = predictions.map(p => ({ classId: p.classId, x: p.x, y: p.y, w: p.w, h: p.h }));
+    setBoxes(prev => [...prev, ...newBoxes]);
+    setPredictions([]);
+  }, [predictions]);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
@@ -222,6 +253,7 @@ export default function ImageDetailPage() {
       if (e.key === "t" && !e.ctrlKey && !e.metaKey && !e.altKey) { setShowTags(s => !s); return; }
       if (e.key === "c" && !e.ctrlKey && !e.metaKey && selectedIndex !== null) { e.preventDefault(); cycleBoxClass(); return; }
       if (e.key === " ") { e.preventDefault(); handleThumbsUp(); return; }
+      if (e.key === "a" && !e.ctrlKey && !e.metaKey && selectedIndex === null) { e.preventDefault(); if (predictions.length) acceptAllPredictions(); else handleAutoDetect(); return; }
 
       const num = parseInt(e.key, 10);
       if (e.key >= "1" && e.key <= "9" && num >= 1 && num <= 9 && selectedIndex !== null && classes.length >= num) {
@@ -237,7 +269,7 @@ export default function ImageDetailPage() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedIndex, saveAnnotations, classes.length, goPrev, goNext, handleDeleteImage, handleThumbsUp, cycleBoxClass, handleSelectedClassChange]);
+  }, [selectedIndex, saveAnnotations, classes.length, goPrev, goNext, handleDeleteImage, handleThumbsUp, cycleBoxClass, handleSelectedClassChange, predictions.length, acceptAllPredictions, handleAutoDetect]);
 
   const addTag = () => setTagList(prev => [...prev, ["", ""]]);
   const updateTag = (i: number, k: 0 | 1, v: string) =>
@@ -293,10 +325,31 @@ export default function ImageDetailPage() {
           Tags {showTags ? "▼" : "▶"}
         </button>
 
+        <span style={{ borderLeft: "1px solid var(--color-border)", height: "1.2rem" }} />
+
+        {modelReady ? (
+          <>
+            <button className="btn btn-ghost" onClick={handleAutoDetect} disabled={detecting} style={{ padding: "0.3rem 0.5rem" }} title="Run model (A)">
+              {detecting ? "Detecting…" : "Auto-detect (A)"}
+            </button>
+            {predictions.length > 0 && (
+              <>
+                <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>{predictions.length} pred</span>
+                <button className="btn btn-primary" onClick={acceptAllPredictions} style={{ padding: "0.3rem 0.5rem" }} title="Accept all predictions (A)">Accept all</button>
+                <button className="btn btn-ghost" onClick={() => setPredictions([])} style={{ padding: "0.3rem 0.5rem" }}>Clear</button>
+              </>
+            )}
+            <input type="range" min={0.05} max={0.95} step={0.05} value={confidence} onChange={e => setConfidence(parseFloat(e.target.value))} style={{ width: 60 }} title={`Confidence: ${Math.round(confidence * 100)}%`} />
+            <span style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", minWidth: "2rem" }}>{Math.round(confidence * 100)}%</span>
+          </>
+        ) : (
+          <Link to="/settings" className="btn btn-ghost" style={{ padding: "0.3rem 0.5rem", fontSize: "0.8rem" }}>Load model</Link>
+        )}
+
         {message && <span style={{ color: "var(--color-success)", fontSize: "0.8rem" }}>{message}</span>}
 
         <span style={{ marginLeft: "auto", color: "var(--color-text-muted)", whiteSpace: "nowrap", fontSize: "0.75rem" }}>
-          ← → auto-save & nav · Space approve · D delete box · Del delete image · C cycle class · 0-9 set class
+          A auto-detect/accept · ← → nav · Space approve · D del box · C cycle class
         </span>
       </div>
 
@@ -319,6 +372,7 @@ export default function ImageDetailPage() {
         <BBoxCanvas
           imageUrl={api.imageUrl(currentImage.split, currentImage.name)}
           boxes={boxes}
+          predictions={predictions}
           classNames={classNames}
           selectedIndex={selectedIndex}
           defaultClassId={defaultClassId}
@@ -327,6 +381,7 @@ export default function ImageDetailPage() {
           onSelect={setSelectedIndex}
           onBoxesChange={handleBoxesChange}
           onDoubleClickBox={cycleBoxClass}
+          onAcceptPrediction={acceptPrediction}
           fill
         />
       </div>

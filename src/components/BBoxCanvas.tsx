@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { getClassColor } from "@/classColors";
 import type { BBox } from "@/types";
+import type { PredictionBox } from "@/api";
 
 const HANDLE_SIZE = 8;
 type ResizeHandle = "nw" | "ne" | "sw" | "se" | "n" | "s" | "e" | "w";
@@ -8,6 +9,7 @@ type ResizeHandle = "nw" | "ne" | "sw" | "se" | "n" | "s" | "e" | "w";
 export interface BBoxCanvasProps {
   imageUrl: string;
   boxes: BBox[];
+  predictions?: PredictionBox[];
   classNames: Record<number, string>;
   selectedIndex: number | null;
   defaultClassId: number;
@@ -16,6 +18,7 @@ export interface BBoxCanvasProps {
   onSelect: (i: number | null) => void;
   onBoxesChange: (boxes: BBox[]) => void;
   onDoubleClickBox?: () => void;
+  onAcceptPrediction?: (index: number) => void;
   maxHeight?: string;
   fill?: boolean;
 }
@@ -23,6 +26,7 @@ export interface BBoxCanvasProps {
 export function BBoxCanvas({
   imageUrl,
   boxes,
+  predictions,
   classNames,
   selectedIndex,
   defaultClassId,
@@ -31,6 +35,7 @@ export function BBoxCanvas({
   onSelect,
   onBoxesChange,
   onDoubleClickBox,
+  onAcceptPrediction,
   maxHeight = "calc(100vh - 140px)",
   fill = false,
 }: BBoxCanvasProps) {
@@ -287,6 +292,25 @@ export function BBoxCanvas({
                       })}
                     </>
                   )}
+                </g>
+              );
+            })}
+            {predictions?.map((p, i) => {
+              const x = (p.x - p.w / 2) * imgSize.w;
+              const y = (p.y - p.h / 2) * imgSize.h;
+              const bw = p.w * imgSize.w;
+              const bh = p.h * imgSize.h;
+              const color = colorFor(p.classId);
+              const label = `${p.className} ${Math.round(p.confidence * 100)}%`;
+              const fontSize = 12;
+              const padX = 3, padY = 2;
+              const lw = label.length * fontSize * 0.58 + padX * 2;
+              const lh = fontSize + padY * 2;
+              return (
+                <g key={`pred-${i}`} style={{ cursor: "pointer", pointerEvents: "all" }} onClick={() => onAcceptPrediction?.(i)}>
+                  <rect x={x} y={y} width={bw} height={bh} fill={color} fillOpacity={0.08} stroke={color} strokeWidth={2} strokeDasharray="6 3" />
+                  <rect x={x} y={y - lh} width={lw} height={lh} fill={color} fillOpacity={0.7} rx={2} />
+                  <text x={x + padX} y={y - padY - 1} fill="#000" fontSize={fontSize} fontWeight={600} dominantBaseline="auto">{label}</text>
                 </g>
               );
             })}

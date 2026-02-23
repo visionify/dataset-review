@@ -15,11 +15,38 @@ export default function SettingsPage() {
   const [colors, setColors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [modelPath, setModelPath] = useState("");
+  const [modelStatus, setModelStatus] = useState<{ loaded: boolean; path: string | null; classes?: Record<number, string> }>({ loaded: false, path: null });
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelMsg, setModelMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api.getSummary().then((s) => setClasses(s.classes ?? [])).catch(() => {});
     api.getClassColors().then((c) => setColors(c || {})).catch(() => setColors({}));
+    api.inferenceHealth().then(h => {
+      setModelStatus({ loaded: h.model_loaded, path: h.model_path });
+      if (h.model_path) setModelPath(h.model_path);
+    }).catch(() => {});
   }, []);
+
+  const loadModel = async () => {
+    if (!modelPath.trim()) return;
+    setModelLoading(true); setModelMsg(null);
+    try {
+      const r = await api.inferenceLoad(modelPath.trim());
+      setModelStatus({ loaded: true, path: r.model_path, classes: r.classes });
+      setModelMsg(`Model loaded with ${Object.keys(r.classes).length} classes.`);
+      setTimeout(() => setModelMsg(null), 3000);
+    } catch (e) { setModelMsg(e instanceof Error ? e.message : "Load failed"); }
+    finally { setModelLoading(false); }
+  };
+
+  const unloadModel = async () => {
+    try { await api.inferenceUnload(); } catch {}
+    setModelStatus({ loaded: false, path: null });
+    setModelMsg("Model unloaded.");
+    setTimeout(() => setModelMsg(null), 2000);
+  };
 
   const getColor = (classId: number) => {
     const key = String(classId);
@@ -100,6 +127,44 @@ export default function SettingsPage() {
       {message && (
         <p style={{ marginTop: "0.75rem", fontSize: "0.9rem", color: "var(--color-text-muted)" }}>{message}</p>
       )}
+
+      {/* Model configuration */}
+      <hr style={{ margin: "1.5rem 0", border: "none", borderTop: "1px solid var(--color-border)" }} />
+      <h2 style={{ fontSize: "1.1rem", marginBottom: "0.75rem" }}>Model (auto-detect)</h2>
+      <p style={{ color: "var(--color-text-muted)", fontSize: "0.9rem", marginBottom: "0.75rem" }}>
+        Load a YOLO .pt model to enable auto-detection in the annotation view. Requires the Python inference server to be running.
+      </p>
+      <div style={{ fontSize: "0.85rem", color: "var(--color-text-muted)", marginBottom: "0.5rem", background: "oklch(0 0 0 / 0.04)", padding: "0.5rem 0.75rem", borderRadius: "var(--radius-sm)" }}>
+        <strong>Setup:</strong> <code>pip install fastapi uvicorn ultralytics</code><br />
+        <strong>Start:</strong> <code>python server/inference.py</code> (port 3457)
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
+        <span style={{ width: 10, height: 10, borderRadius: "50%", background: modelStatus.loaded ? "var(--color-success)" : "var(--color-text-muted)" }} />
+        <span style={{ fontSize: "0.9rem" }}>{modelStatus.loaded ? `Loaded: ${modelStatus.path}` : "No model loaded"}</span>
+      </div>
+      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+        <input
+          type="text"
+          className="input"
+          placeholder="/path/to/model.pt"
+          value={modelPath}
+          onChange={e => setModelPath(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") loadModel(); }}
+          style={{ flex: 1, minWidth: "200px", padding: "0.4rem 0.6rem" }}
+        />
+        <button className="btn btn-primary" onClick={loadModel} disabled={modelLoading || !modelPath.trim()}>
+          {modelLoading ? "Loading…" : "Load model"}
+        </button>
+        {modelStatus.loaded && (
+          <button className="btn btn-ghost" onClick={unloadModel}>Unload</button>
+        )}
+      </div>
+      {modelStatus.loaded && modelStatus.classes && (
+        <div style={{ marginTop: "0.5rem", fontSize: "0.85rem", color: "var(--color-text-muted)" }}>
+          Model classes: {Object.entries(modelStatus.classes).map(([id, name]) => `${name} (${id})`).join(", ")}
+        </div>
+      )}
+      {modelMsg && <p style={{ marginTop: "0.5rem", fontSize: "0.9rem", color: "var(--color-text-muted)" }}>{modelMsg}</p>}
     </div>
   );
 }

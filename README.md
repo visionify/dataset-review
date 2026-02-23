@@ -38,10 +38,27 @@ Supports both standard and Roboflow-style structures. The server auto-detects `d
     └── tags/               # per-image JSON tags
 ```
 
+## Model inference (auto-detect)
+
+Optional Python sidecar server that loads a YOLO `.pt` model and runs inference on images for auto-labeling.
+
+```bash
+pip install fastapi uvicorn ultralytics
+python server/inference.py    # starts on port 3457
+```
+
+Then in the app: **Settings** → paste path to your `.pt` file → **Load model**. An "Auto-detect (A)" button appears in the annotation view. Predictions show as dashed boxes — click one to accept it, or "Accept all" to merge everything.
+
+| Key | Action |
+|---|---|
+| `A` | Run auto-detect (or accept all if predictions shown) |
+| Click prediction | Accept that single prediction |
+
 ## Architecture
 
 ```
 server/index.js          Express API — file I/O, YAML parsing, image/label CRUD
+server/inference.py      Python FastAPI — YOLO model loading & inference (port 3457)
 src/
   api.ts                 Typed fetch wrappers for all API endpoints
   types.ts               Shared TypeScript interfaces
@@ -69,6 +86,7 @@ src/
 | `C` | Cycle selected box's class |
 | `Delete` | Delete selected box, or delete image if no box selected |
 | `0-9` | Set selected box's class |
+| `A` | Auto-detect / Accept all predictions |
 | `Ctrl+S` | Manual save |
 | `T` | Toggle tags panel |
 | Double-click bbox | Cycle class |
@@ -88,6 +106,10 @@ src/
 | GET/PATCH | `/api/reviewed` | Reviewed image tracking |
 | GET/PUT | `/api/class-colors` | Custom class colors |
 | GET | `/api/validation` | Missing labels, empty labels, class balance |
+| GET | `/api/inference/health` | Model status (proxied to Python) |
+| POST | `/api/inference/load` | Load a .pt model |
+| POST | `/api/inference/predict` | Run inference on an image |
+| POST | `/api/inference/unload` | Unload current model |
 
 ## Review data
 

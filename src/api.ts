@@ -38,6 +38,16 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return r.json();
 }
 
+export interface PredictionBox {
+  classId: number;
+  className: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  confidence: number;
+}
+
 export interface DatasetSummary {
   configured: boolean;
   classes: ClassItem[];
@@ -88,6 +98,13 @@ export const api = {
   saveTags: (split: string, base: string, tags: ImageTags) =>
     put<{ ok: boolean }>(`/tags/${encodeURIComponent(split)}/${encodeURIComponent(base)}`, tags),
   patchMetadata: (data: Record<string, unknown>) => patch<Record<string, unknown>>("/metadata", data),
+
+  // Inference
+  inferenceHealth: () => get<{ status: string; model_loaded: boolean; model_path: string | null }>("/inference/health"),
+  inferenceLoad: (modelPath: string) => post<{ ok: boolean; model_path: string; classes: Record<number, string> }>("/inference/load", { model_path: modelPath }),
+  inferencePredict: (split: string, name: string, confidence?: number, iou?: number) =>
+    post<{ boxes: PredictionBox[]; count: number }>("/inference/predict", { split, name, confidence, iou }),
+  inferenceUnload: () => post<{ ok: boolean }>("/inference/unload", {}),
 };
 
 export function imageBase(name: string): string {

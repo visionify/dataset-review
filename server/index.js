@@ -509,6 +509,49 @@ app.delete("/api/images/:split/:name", async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------------------------------------------------------------------------
+// Inference proxy — forwards to the Python inference server
+// ---------------------------------------------------------------------------
+const INFERENCE_URL = process.env.INFERENCE_URL || "http://localhost:3457";
+
+async function inferenceProxy(method, inferPath, body) {
+  const opts = { method, headers: { "Content-Type": "application/json" } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(`${INFERENCE_URL}${inferPath}`, opts);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || JSON.stringify(data));
+  return data;
+}
+
+app.get("/api/inference/health", async (_req, res) => {
+  try { res.json(await inferenceProxy("GET", "/health")); }
+  catch { res.json({ status: "offline", model_loaded: false, model_path: null }); }
+});
+
+app.post("/api/inference/load", async (req, res) => {
+  try { res.json(await inferenceProxy("POST", "/load", req.body)); }
+  catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+app.post("/api/inference/predict", async (req, res) => {
+  const datasetRoot = getDatasetPath();
+  const { split, name, confidence, iou } = req.body;
+  if (!datasetRoot || !split || !name) return res.status(400).json({ error: "split and name required" });
+  try {
+    const config = await resolveConfig(datasetRoot);
+    const imagesRel = config[split];
+    if (!imagesRel) return res.status(404).json({ error: "split not found" });
+    const imagePath = path.join(datasetRoot, imagesRel, name);
+    const result = await inferenceProxy("POST", "/predict", { image_path: imagePath, confidence: confidence ?? 0.25, iou: iou ?? 0.45 });
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+app.post("/api/inference/unload", async (_req, res) => {
+  try { res.json(await inferenceProxy("POST", "/unload")); }
+  catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
 app.listen(PORT, () => {
   console.log(`Dataset API at http://localhost:${PORT}`);
 });
