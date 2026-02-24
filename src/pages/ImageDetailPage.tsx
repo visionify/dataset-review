@@ -16,6 +16,7 @@ export default function ImageDetailPage() {
 
   const fromSplit = state?.fromSplit ?? "all";
   const filterReviewed = state?.filterReviewed as "yes" | "no" | undefined;
+  const filterClassId = state?.classId != null ? parseInt(state.classId, 10) : null;
 
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [classColors, setClassColors] = useState<Record<number, string>>({});
@@ -38,6 +39,7 @@ export default function ImageDetailPage() {
   const [confidence, setConfidence] = useState(0.25);
   const boxesRef = useRef(boxes);
   boxesRef.current = boxes;
+  const loadedImageRef = useRef<{ split: string; name: string } | null>(null);
 
   const setDefaultClassId = useCallback((id: number) => {
     setDefaultClassIdState(id);
@@ -59,18 +61,27 @@ export default function ImageDetailPage() {
     api.inferenceHealth().then(h => setModelReady(h.model_loaded)).catch(() => setModelReady(false));
   }, []);
 
-  // Load full image list for the split — this enables seamless navigation
+  // Load full image list for the split (or class) — this enables seamless navigation
   useEffect(() => {
     setListReady(false);
     const loadAll = async () => {
       const all: ImageItem[] = [];
       let page = 1;
       let hasMore = true;
-      while (hasMore) {
-        const r = await api.getImages({ split: fromSplit, page, limit: LOAD_LIMIT, reviewed: filterReviewed });
-        all.push(...r.images);
-        hasMore = r.images.length === LOAD_LIMIT;
-        page++;
+      if (filterClassId != null && !isNaN(filterClassId)) {
+        while (hasMore) {
+          const r = await api.getClassImages(filterClassId, page, LOAD_LIMIT);
+          all.push(...r.images);
+          hasMore = r.images.length === LOAD_LIMIT;
+          page++;
+        }
+      } else {
+        while (hasMore) {
+          const r = await api.getImages({ split: fromSplit, page, limit: LOAD_LIMIT, reviewed: filterReviewed });
+          all.push(...r.images);
+          hasMore = r.images.length === LOAD_LIMIT;
+          page++;
+        }
       }
       setAllImages(all);
       if (split && name) {
@@ -82,7 +93,7 @@ export default function ImageDetailPage() {
       setListReady(true);
     };
     loadAll().catch(() => setListReady(true));
-  }, [fromSplit, filterReviewed]);
+  }, [fromSplit, filterReviewed, filterClassId]);
 
   const currentImage = allImages[currentIdx] ?? (split && name ? { split, name, imageRel: "", relPath: "" } : null);
   const hasPrev = currentIdx > 0;
@@ -92,21 +103,34 @@ export default function ImageDetailPage() {
   useEffect(() => {
     if (!currentImage) return;
     const s = currentImage.split;
-    const b = imageBase(currentImage.name);
+    const n = currentImage.name;
+    const b = imageBase(n);
+
+    // Immediately invalidate: boxes no longer correspond to a loaded image
+    loadedImageRef.current = null;
     setSelectedIndex(null);
     setIsReviewed(false);
     setPredictions([]);
+    setBoxes([]);
+
+    let stale = false;
+
     Promise.all([api.getAnnotations(s, b), api.getTags(s, b), api.getReviewed()]).then(([ann, t, rev]) => {
+      if (stale) return;
       setBoxes(ann);
+      loadedImageRef.current = { split: s, name: n };
       const tagObj = (t && typeof t === "object" && !Array.isArray(t)) ? t as Record<string, unknown> : {};
       setTagList(Object.entries(tagObj).map(([k, v]) => [k, String(v ?? "")]));
       const key = `${s}/${b}`;
       setIsReviewed(rev.reviewed.includes(key));
-    }).catch(() => { setBoxes([]); setTagList([]); });
+    }).catch(() => { if (!stale) { setBoxes([]); setTagList([]); } });
+
     // Update URL to match current image (without full page reload)
-    const url = `/image/${encodeURIComponent(s)}/${encodeURIComponent(currentImage.name)}`;
+    const url = `/image/${encodeURIComponent(s)}/${encodeURIComponent(n)}`;
     if (location.pathname !== url)
       navigate(url, { replace: true, state: { fromSplit, filterReviewed, classId: state?.classId, startIndex: currentIdx } });
+
+    return () => { stale = true; };
   }, [currentIdx, currentImage?.split, currentImage?.name]);
 
   const markReviewed = useCallback(() => {
@@ -137,12 +161,14 @@ export default function ImageDetailPage() {
   }, [currentImage, tagList]);
 
   const autoSaveAndMark = useCallback(() => {
-    if (!currentImage) return;
-    const s = currentImage.split;
-    const b = imageBase(currentImage.name);
+    const loaded = loadedImageRef.current;
+    if (!loaded) return;
+    const s = loaded.split;
+    const b = imageBase(loaded.name);
     api.saveAnnotations(s, b, boxesRef.current).catch(() => {});
     api.setReviewed(s, b, true).catch(() => {});
-  }, [currentImage]);
+    loadedImageRef.current = null;
+  }, []);
 
   const goNext = useCallback(() => {
     if (!hasNext) return;
@@ -169,7 +195,7 @@ export default function ImageDetailPage() {
       await api.deleteImage(currentImage.split, currentImage.name);
       const newList = allImages.filter((_, i) => i !== currentIdx);
       setAllImages(newList);
-      if (newList.length === 0) { navigate(`/images/${fromSplit}`, { replace: true }); return; }
+      if (newList.length === 0) { navigate(filterClassId != null ? `/class/${filterClassId}` : `/images/${fromSplit}`, { replace: true }); return; }
       setCurrentIdx(Math.min(currentIdx, newList.length - 1));
     } catch (e) { setMessage(e instanceof Error ? e.message : "Delete failed"); }
     finally { setDeleting(false); }
@@ -276,10 +302,12 @@ export default function ImageDetailPage() {
     setTagList(prev => prev.map((row, j) => j === i ? (k === 0 ? [v, row[1]] : [row[0], v]) : row));
   const removeTag = (i: number) => setTagList(prev => prev.filter((_, j) => j !== i));
 
+  const backLink = filterClassId != null ? `/class/${filterClassId}` : `/images/${fromSplit}`;
+
   if (!currentImage) {
     return (
       <div>
-        <Link to={`/images/${fromSplit}`} className="btn btn-ghost">← Back</Link>
+        <Link to={backLink} className="btn btn-ghost">← Back</Link>
         <p style={{ marginTop: "1rem" }}>{listReady ? "No images found." : "Loading images…"}</p>
       </div>
     );
@@ -294,7 +322,7 @@ export default function ImageDetailPage() {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: "80vh" }}>
       {/* Compact toolbar */}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "0.5rem", padding: "0.4rem 0.75rem", borderBottom: "1px solid var(--color-border)", background: "var(--color-surface)", fontSize: "0.85rem" }}>
-        <Link to={`/images/${fromSplit}`} className="btn btn-ghost" style={{ padding: "0.3rem 0.5rem" }}>← Back</Link>
+        <Link to={backLink} className="btn btn-ghost" style={{ padding: "0.3rem 0.5rem" }}>← Back</Link>
 
         <button className="btn btn-ghost" style={{ padding: "0.3rem 0.5rem" }} onClick={goPrev} disabled={!hasPrev}>←</button>
         <span style={{ color: "var(--color-text-muted)", fontVariantNumeric: "tabular-nums", minWidth: "5rem", textAlign: "center" }}>
