@@ -5,12 +5,16 @@ import type { ValidationCheck, ImageItem } from "@/types";
 
 const ITEMS_PER_PAGE = 48;
 
+interface DupItem extends ImageItem { dupCount?: number; hash?: string; originalName?: string; originalSplit?: string }
+
 export default function ValidationPage() {
   const [checks, setChecks] = useState<ValidationCheck[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [acting, setActing] = useState(false);
 
   const loadChecks = useCallback(() => {
     setLoading(true);
@@ -35,6 +39,42 @@ export default function ValidationPage() {
     } catch {}
   };
 
+  const handleFixDuplicates = async () => {
+    setActing(true); setActionMsg(null);
+    try {
+      const r = await api.fixDuplicateLabels();
+      setActionMsg(`Fixed ${r.filesFixed} files, removed ${r.linesRemoved} duplicate lines.`);
+      loadChecks();
+    } catch (e) { setActionMsg(e instanceof Error ? e.message : "Failed"); }
+    finally { setActing(false); setTimeout(() => setActionMsg(null), 5000); }
+  };
+
+  const handleDeleteMissingLabels = async () => {
+    const count = checks.find(c => c.id === "missing_labels")?.count ?? 0;
+    if (!count) return;
+    if (!window.confirm(`Delete ${count} images that have no label file? This cannot be undone.`)) return;
+    setActing(true); setActionMsg(null);
+    try {
+      const r = await api.deleteMissingLabelImages();
+      setActionMsg(`Deleted ${r.deleted} images.`);
+      loadChecks();
+    } catch (e) { setActionMsg(e instanceof Error ? e.message : "Failed"); }
+    finally { setActing(false); setTimeout(() => setActionMsg(null), 5000); }
+  };
+
+  const handleDeleteDuplicateImages = async () => {
+    const count = checks.find(c => c.id === "duplicate_images")?.count ?? 0;
+    if (!count) return;
+    if (!window.confirm(`Delete ${count} duplicate images (and their labels)? The first occurrence of each image will be kept. This cannot be undone.`)) return;
+    setActing(true); setActionMsg(null);
+    try {
+      const r = await api.deleteDuplicateImages();
+      setActionMsg(`Removed ${r.deleted} duplicate images.`);
+      loadChecks();
+    } catch (e) { setActionMsg(e instanceof Error ? e.message : "Failed"); }
+    finally { setActing(false); setTimeout(() => setActionMsg(null), 5000); }
+  };
+
   if (loading) return <p style={{ color: "var(--color-text-muted)" }}>Loading validation…</p>;
   if (error) return <p style={{ color: "var(--color-danger)" }}>{error}</p>;
 
@@ -45,13 +85,16 @@ export default function ValidationPage() {
         <Link to="/" className="btn btn-ghost">← Dashboard</Link>
       </div>
       <p style={{ color: "var(--color-text-muted)", fontSize: "0.95rem" }}>
-        Run these checks before training to catch missing labels, empty labels, and class balance.
+        Run these checks before training to catch missing labels, empty labels, duplicates, and class balance.
       </p>
+
+      {actionMsg && <div style={{ padding: "0.5rem 0.75rem", background: "oklch(0.55 0.18 145 / 0.15)", borderRadius: "var(--radius-sm)", fontSize: "0.9rem" }}>{actionMsg}</div>}
+
       <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
         {checks.map((c) => {
-          const isImageList = (c.id === "missing_labels" || c.id === "empty_labels") && Array.isArray(c.detail);
+          const isImageList = (c.id === "missing_labels" || c.id === "empty_labels" || c.id === "duplicate_labels" || c.id === "duplicate_images") && Array.isArray(c.detail);
           const isExpanded = expandedId === c.id;
-          const imageItems: ImageItem[] = isImageList ? (c.detail as ImageItem[]) : [];
+          const imageItems: DupItem[] = isImageList ? (c.detail as DupItem[]) : [];
           const currentPage = pages[c.id] ?? 0;
           const totalPages = Math.max(1, Math.ceil(imageItems.length / ITEMS_PER_PAGE));
           const pageItems = imageItems.slice(currentPage * ITEMS_PER_PAGE, (currentPage + 1) * ITEMS_PER_PAGE);
@@ -74,17 +117,62 @@ export default function ValidationPage() {
                   {c.name}
                   {isImageList && c.count > 0 && <span style={{ marginLeft: "0.5rem", fontSize: "0.85rem", color: "var(--color-text-muted)" }}>{isExpanded ? "▼" : "▶"}</span>}
                 </h2>
-                <span
-                  style={{
-                    fontSize: "0.85rem", padding: "0.2rem 0.5rem", borderRadius: "var(--radius-sm)",
-                    background: c.severity === "ok" ? "oklch(0.55 0.18 145 / 0.2)" : c.severity === "warning" ? "oklch(0.75 0.15 85 / 0.2)" : "oklch(0 0 0 / 0.06)",
-                  }}
-                >
-                  {c.count}
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  {/* Action buttons */}
+                  {c.id === "duplicate_labels" && c.count > 0 && (
+                    <button
+                      className="btn btn-primary"
+                      style={{ padding: "0.25rem 0.6rem", fontSize: "0.85rem" }}
+                      onClick={(e) => { e.stopPropagation(); handleFixDuplicates(); }}
+                      disabled={acting}
+                    >
+                      {acting ? "Fixing…" : "Remove all duplicates"}
+                    </button>
+                  )}
+                  {c.id === "missing_labels" && c.count > 0 && (
+                    <button
+                      className="btn btn-ghost"
+                      style={{ padding: "0.25rem 0.6rem", fontSize: "0.85rem", color: "var(--color-danger)" }}
+                      onClick={(e) => { e.stopPropagation(); handleDeleteMissingLabels(); }}
+                      disabled={acting}
+                    >
+                      {acting ? "Deleting…" : `Delete all ${c.count} images`}
+                    </button>
+                  )}
+                  {c.id === "duplicate_images" && c.count > 0 && (
+                    <button
+                      className="btn btn-ghost"
+                      style={{ padding: "0.25rem 0.6rem", fontSize: "0.85rem", color: "var(--color-danger)" }}
+                      onClick={(e) => { e.stopPropagation(); handleDeleteDuplicateImages(); }}
+                      disabled={acting}
+                    >
+                      {acting ? "Deleting…" : `Remove ${c.count} duplicates`}
+                    </button>
+                  )}
+                  <span
+                    style={{
+                      fontSize: "0.85rem", padding: "0.2rem 0.5rem", borderRadius: "var(--radius-sm)",
+                      background: c.severity === "ok" ? "oklch(0.55 0.18 145 / 0.2)" : c.severity === "warning" ? "oklch(0.75 0.15 85 / 0.2)" : "oklch(0 0 0 / 0.06)",
+                    }}
+                  >
+                    {c.count}
+                  </span>
+                </div>
               </div>
 
-              {/* Image grid for missing/empty labels */}
+              {/* Extra info for duplicates */}
+              {c.id === "duplicate_labels" && c.count > 0 && (c as any).extra?.totalDupLines && (
+                <p style={{ fontSize: "0.85rem", color: "var(--color-text-muted)", marginBottom: "0.25rem" }}>
+                  {(c as any).extra.totalDupLines} total duplicate lines across {c.count} files
+                </p>
+              )}
+              {c.id === "duplicate_images" && c.count > 0 && (
+                <p style={{ fontSize: "0.85rem", color: "var(--color-text-muted)", marginBottom: "0.25rem" }}>
+                  {c.count} duplicate images found (first occurrence of each will be kept)
+                </p>
+              )}
+
+              {/* Image grid for missing/empty/duplicate labels */}
               {isImageList && isExpanded && imageItems.length > 0 && (
                 <div style={{ marginTop: "0.75rem" }}>
                   {totalPages > 1 && (
@@ -107,16 +195,20 @@ export default function ValidationPage() {
                           </div>
                           <div style={{ padding: "0.25rem 0.4rem", fontSize: "0.7rem", color: "var(--color-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {img.name}
+                            {img.dupCount != null && <span style={{ marginLeft: "0.25rem", color: "var(--color-warning)" }}>({img.dupCount} dup)</span>}
+                            {img.originalName && <span style={{ marginLeft: "0.25rem", color: "var(--color-warning)" }} title={`Original: ${img.originalSplit}/${img.originalName}`}>⇒ dup</span>}
                           </div>
                         </Link>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); handleDelete(img, c.id); }}
-                          style={{ position: "absolute", top: 4, right: 4, background: "rgba(239,68,68,0.85)", color: "#fff", border: "none", borderRadius: "50%", width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.75rem", cursor: "pointer", fontWeight: 700 }}
-                          title="Delete image"
-                        >
-                          ×
-                        </button>
+                        {c.id !== "duplicate_labels" && c.id !== "duplicate_images" && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleDelete(img, c.id); }}
+                            style={{ position: "absolute", top: 4, right: 4, background: "rgba(239,68,68,0.85)", color: "#fff", border: "none", borderRadius: "50%", width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.75rem", cursor: "pointer", fontWeight: 700 }}
+                            title="Delete image"
+                          >
+                            ×
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -124,7 +216,7 @@ export default function ValidationPage() {
               )}
 
               {/* Class distribution table */}
-              {!isImageList && typeof c.detail === "object" && c.detail !== null && (
+              {c.id === "class_balance" && typeof c.detail === "object" && c.detail !== null && !Array.isArray(c.detail) && (
                 <div style={{ fontSize: "0.85rem", color: "var(--color-text-muted)", marginTop: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
                   {Object.entries(c.detail).map(([k, v]) => (
                     <span key={k} style={{ padding: "0.2rem 0.4rem", background: "oklch(0 0 0 / 0.06)", borderRadius: "var(--radius-sm)" }}>

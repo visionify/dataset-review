@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createHash } from "crypto";
 import yaml from "js-yaml";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -413,7 +414,8 @@ app.get("/api/validation", async (_req, res) => {
   try {
     const config = await resolveConfig(datasetRoot);
     const images = await collectAllImages(datasetRoot, config);
-    const missingLabels = [], emptyLabels = [], classCounts = {};
+    const missingLabels = [], emptyLabels = [], duplicateLabels = [], classCounts = {};
+    let totalDupLines = 0;
     for (const img of images) {
       const labelsRel = config.labelsDir?.[img.split];
       if (!labelsRel) { missingLabels.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath }); continue; }
@@ -422,16 +424,141 @@ app.get("/api/validation", async (_req, res) => {
         const content = await fs.readFile(path.join(datasetRoot, labelsRel, base + ".txt"), "utf8");
         const lines = content.split("\n").filter(l => l.trim());
         if (!lines.length) emptyLabels.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath });
+        const unique = new Set(lines.map(l => l.trim()));
+        if (unique.size < lines.length) {
+          const dupCount = lines.length - unique.size;
+          totalDupLines += dupCount;
+          duplicateLabels.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath, dupCount });
+        }
         for (const line of lines) { const c = parseInt(line.trim().split(/\s+/)[0], 10); classCounts[c] = (classCounts[c] || 0) + 1; }
       } catch { missingLabels.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath }); }
     }
+    // Detect duplicate images by MD5 hash
+    const hashMap = {};
+    for (const img of images) {
+      const imgPath = path.join(datasetRoot, config[img.split], img.name);
+      try {
+        const buf = await fs.readFile(imgPath);
+        const hash = createHash("md5").update(buf).digest("hex");
+        if (!hashMap[hash]) hashMap[hash] = [];
+        hashMap[hash].push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath });
+      } catch {}
+    }
+    const duplicateImages = [];
+    let totalDupImages = 0;
+    for (const [hash, items] of Object.entries(hashMap)) {
+      if (items.length > 1) {
+        totalDupImages += items.length - 1;
+        for (const item of items.slice(1)) {
+          duplicateImages.push({ ...item, hash, originalName: items[0].name, originalSplit: items[0].split });
+        }
+      }
+    }
+
     res.json({ checks: [
       { id: "missing_labels", name: "Images without label file", count: missingLabels.length, severity: missingLabels.length ? "warning" : "ok", detail: missingLabels },
       { id: "empty_labels", name: "Label files with no objects", count: emptyLabels.length, severity: "info", detail: emptyLabels },
+      { id: "duplicate_labels", name: "Images with duplicate labels", count: duplicateLabels.length, severity: duplicateLabels.length ? "warning" : "ok", detail: duplicateLabels, extra: { totalDupLines } },
+      { id: "duplicate_images", name: "Duplicate images (by MD5)", count: duplicateImages.length, severity: duplicateImages.length ? "warning" : "ok", detail: duplicateImages, extra: { totalDupImages } },
       { id: "class_balance", name: "Class distribution", count: Object.keys(classCounts).length, severity: "ok", detail: classCounts },
     ]});
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
+
+// Remove duplicate lines from all label files
+app.post("/api/validation/fix-duplicates", async (_req, res) => {
+  const datasetRoot = getDatasetPath();
+  if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
+  try {
+    const config = await resolveConfig(datasetRoot);
+    const images = await collectAllImages(datasetRoot, config);
+    let filesFixed = 0, linesRemoved = 0;
+    for (const img of images) {
+      const labelsRel = config.labelsDir?.[img.split];
+      if (!labelsRel) continue;
+      const base = path.basename(img.name, path.extname(img.name));
+      const labelPath = path.join(datasetRoot, labelsRel, base + ".txt");
+      try {
+        const content = await fs.readFile(labelPath, "utf8");
+        const lines = content.split("\n").filter(l => l.trim());
+        const unique = [...new Set(lines.map(l => l.trim()))];
+        if (unique.length < lines.length) {
+          linesRemoved += lines.length - unique.length;
+          filesFixed++;
+          await fs.writeFile(labelPath, unique.join("\n") + "\n", "utf8");
+        }
+      } catch {}
+    }
+    invalidateConfigCache();
+    res.json({ ok: true, filesFixed, linesRemoved });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// Remove duplicate images (keeps first, deletes rest + their labels)
+app.post("/api/validation/delete-duplicate-images", async (_req, res) => {
+  const datasetRoot = getDatasetPath();
+  if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
+  try {
+    const config = await resolveConfig(datasetRoot);
+    const images = await collectAllImages(datasetRoot, config);
+    const hashMap = {};
+    for (const img of images) {
+      const imgPath = path.join(datasetRoot, config[img.split], img.name);
+      try {
+        const buf = await fs.readFile(imgPath);
+        const hash = createHash("md5").update(buf).digest("hex");
+        if (!hashMap[hash]) hashMap[hash] = [];
+        hashMap[hash].push(img);
+      } catch {}
+    }
+    let deleted = 0;
+    for (const items of Object.values(hashMap)) {
+      if (items.length <= 1) continue;
+      for (const img of items.slice(1)) {
+        await tryDeleteImage(datasetRoot, config, img);
+        const labelsRel = config.labelsDir?.[img.split];
+        if (labelsRel) {
+          const base = path.basename(img.name, path.extname(img.name));
+          try { await fs.unlink(path.join(datasetRoot, labelsRel, base + ".txt")); } catch {}
+        }
+        deleted++;
+      }
+    }
+    invalidateConfigCache();
+    res.json({ ok: true, deleted });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// Bulk-delete images that have no label file
+app.post("/api/validation/delete-missing-labels", async (_req, res) => {
+  const datasetRoot = getDatasetPath();
+  if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
+  try {
+    const config = await resolveConfig(datasetRoot);
+    const images = await collectAllImages(datasetRoot, config);
+    let deleted = 0;
+    for (const img of images) {
+      const labelsRel = config.labelsDir?.[img.split];
+      if (!labelsRel) { await tryDeleteImage(datasetRoot, config, img); deleted++; continue; }
+      const base = path.basename(img.name, path.extname(img.name));
+      const labelPath = path.join(datasetRoot, labelsRel, base + ".txt");
+      try { await fs.access(labelPath); } catch { await tryDeleteImage(datasetRoot, config, img); deleted++; }
+    }
+    invalidateConfigCache();
+    res.json({ ok: true, deleted });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+async function tryDeleteImage(datasetRoot, config, img) {
+  const imagesRel = config[img.split];
+  if (!imagesRel) return;
+  try { await fs.unlink(path.join(datasetRoot, imagesRel, img.name)); } catch {}
+  const key = `${img.split}/${path.basename(img.name, path.extname(img.name))}`;
+  try {
+    const d = JSON.parse(await fs.readFile(getReviewedPath(datasetRoot), "utf8"));
+    if (Array.isArray(d.reviewed)) { d.reviewed = d.reviewed.filter(k => k !== key); await fs.writeFile(getReviewedPath(datasetRoot), JSON.stringify(d, null, 2), "utf8"); }
+  } catch {}
+}
 
 // Metadata
 app.patch("/api/metadata", async (req, res) => {

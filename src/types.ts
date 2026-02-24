@@ -48,4 +48,5 @@ export interface ValidationCheck {
   count: number;
   severity: "ok" | "warning" | "info";
   detail: string[] | ImageItem[] | Record<string, number>;
+  extra?: Record<string, unknown>;
 }

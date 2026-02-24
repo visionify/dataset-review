@@ -98,6 +98,9 @@ export const api = {
   saveTags: (split: string, base: string, tags: ImageTags) =>
     put<{ ok: boolean }>(`/tags/${encodeURIComponent(split)}/${encodeURIComponent(base)}`, tags),
   patchMetadata: (data: Record<string, unknown>) => patch<Record<string, unknown>>("/metadata", data),
+  fixDuplicateLabels: () => post<{ ok: boolean; filesFixed: number; linesRemoved: number }>("/validation/fix-duplicates", {}),
+  deleteMissingLabelImages: () => post<{ ok: boolean; deleted: number }>("/validation/delete-missing-labels", {}),
+  deleteDuplicateImages: () => post<{ ok: boolean; deleted: number }>("/validation/delete-duplicate-images", {}),
 
   // Inference
   inferenceHealth: () => get<{ status: string; model_loaded: boolean; model_path: string | null }>("/inference/health"),
