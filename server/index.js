@@ -11,6 +11,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = 3456;
 
+const IMG_EXTS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif"]);
+function stripImageExt(name) {
+  const ext = path.extname(name).toLowerCase();
+  return IMG_EXTS.has(ext) ? name.slice(0, -ext.length) : name;
+}
+
 app.use(cors());
 app.use(express.json());
 
@@ -489,7 +495,7 @@ app.get("/api/annotations/:split/:base", async (req, res) => {
   const datasetRoot = getDatasetPath();
   const config = await resolveConfig(datasetRoot);
   const { split, base: baseParam } = req.params;
-  const base = path.basename(baseParam, path.extname(baseParam));
+  const base = stripImageExt(baseParam);
   const labelsRel = config.labelsDir?.[split];
   if (!labelsRel) return res.json([]);
   const labelPath = path.join(datasetRoot, labelsRel, base + ".txt");
@@ -507,7 +513,7 @@ app.put("/api/annotations/:split/:base", async (req, res) => {
   const datasetRoot = getDatasetPath();
   const config = await resolveConfig(datasetRoot);
   const { split, base: baseParam } = req.params;
-  const base = path.basename(baseParam, path.extname(baseParam));
+  const base = stripImageExt(baseParam);
   const labelsRel = config.labelsDir?.[split];
   if (!labelsRel) return res.status(400).json({ error: "no labels dir for split " + split });
   const labelsDir = path.join(datasetRoot, labelsRel);
@@ -533,14 +539,14 @@ function tagFilePath(datasetRoot, base) {
 
 app.get("/api/tags/:split/:base", async (req, res) => {
   const datasetRoot = getDatasetPath();
-  const base = path.basename(req.params.base, path.extname(req.params.base));
+  const base = stripImageExt(req.params.base);
   try { res.json(JSON.parse(await fs.readFile(tagFilePath(datasetRoot, base), "utf8"))); } catch { res.json({}); }
 });
 
 app.put("/api/tags/:split/:base", async (req, res) => {
   const datasetRoot = getDatasetPath();
   await ensureReviewDirs(datasetRoot);
-  const base = path.basename(req.params.base, path.extname(req.params.base));
+  const base = stripImageExt(req.params.base);
   if (typeof req.body !== "object" || req.body === null) return res.status(400).json({ error: "object required" });
   await fs.writeFile(tagFilePath(datasetRoot, base), JSON.stringify(req.body, null, 2), "utf8");
   res.json({ ok: true });
