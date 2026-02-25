@@ -128,6 +128,8 @@ function invalidateConfigCache() {
   _cfgCache = null;
   _cfgCachePath = null;
   classIndexCache = null;
+  tagIndexCache = null;
+  tagIndexCachePath = null;
   classIndexCachePath = null;
 }
 
@@ -181,6 +183,75 @@ async function getImagesPaginated(datasetRoot, config, split, page, limit, revie
   }
   const start = (page - 1) * limit;
   return { images: filtered.slice(start, start + limit).map(({ split: s, name, imageRel, relPath }) => ({ split: s, name, imageRel, relPath })), total: filtered.length };
+}
+
+// ── Auto-tags from filenames ─────────────────────────────────────────────────
+
+function parseImageTags(filename) {
+  const base = path.basename(filename, path.extname(filename));
+  const result = { task: "no-task", year: null, monthYear: null, date: null, camera: null };
+
+  const taskRe = /task[_\-]?(\d+)/i;
+  const taskMatch = base.match(taskRe);
+  if (taskMatch) result.task = `task-${taskMatch[1]}`;
+
+  const dateRe = /(202\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])/;
+  const dateMatch = base.match(dateRe);
+  if (dateMatch) {
+    result.year = dateMatch[1];
+    result.monthYear = `${dateMatch[1]}-${dateMatch[2]}`;
+    result.date = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+  }
+
+  const NOISE = new Set(["task", "frame", "fr", "image", "img", "pallet", "pallets", "video", "svid", "rtsp", "hd", "cam", "mp", "min", "part", "new", "version"]);
+  const tokens = base.split(/[_\-\s&()]+/);
+  const cleaned = [];
+  const seen = new Set();
+  for (const tok of tokens) {
+    let t = tok.replace(/[^a-zA-Z]/g, "").toLowerCase();
+    if (!t || t.length < 3 || NOISE.has(t)) continue;
+    if (/^[a-f]+$/.test(t) && t.length >= 6) continue;
+    if (seen.has(t)) continue;
+    seen.add(t);
+    cleaned.push(t);
+  }
+  result.camera = cleaned.length ? cleaned.join("-") : null;
+
+  return result;
+}
+
+let tagIndexCache = null;
+let tagIndexCachePath = null;
+
+async function buildTagIndex(datasetRoot, config) {
+  if (tagIndexCache && tagIndexCachePath === datasetRoot) return tagIndexCache;
+  const images = await collectAllImages(datasetRoot, config);
+  const byImage = {};
+  const tasks = {}, months = {}, cameras = {};
+
+  for (const img of images) {
+    const tags = parseImageTags(img.name);
+    byImage[`${img.split}/${img.name}`] = tags;
+    const entry = { split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath };
+
+    if (!tasks[tags.task]) tasks[tags.task] = [];
+    tasks[tags.task].push(entry);
+
+    if (tags.monthYear) {
+      if (!months[tags.monthYear]) months[tags.monthYear] = [];
+      months[tags.monthYear].push(entry);
+    }
+
+    if (tags.camera) {
+      if (!cameras[tags.camera]) cameras[tags.camera] = [];
+      cameras[tags.camera].push(entry);
+    }
+  }
+
+  const idx = { byImage, tasks, months, cameras };
+  tagIndexCache = idx;
+  tagIndexCachePath = datasetRoot;
+  return idx;
 }
 
 let classIndexCache = null;
@@ -268,6 +339,25 @@ app.get("/api/dataset/summary", async (_req, res) => {
   }
 });
 
+app.get("/api/auto-tags", async (_req, res) => {
+  const datasetRoot = getDatasetPath();
+  if (!datasetRoot.trim()) return res.json({ tasks: [], months: [], cameras: [] });
+  try {
+    const config = await resolveConfig(datasetRoot);
+    const idx = await buildTagIndex(datasetRoot, config);
+    const tasks = Object.entries(idx.tasks).map(([name, imgs]) => ({ name, count: imgs.length }))
+      .sort((a, b) => {
+        const na = parseInt(a.name.replace("task-", ""), 10);
+        const nb = parseInt(b.name.replace("task-", ""), 10);
+        if (!isNaN(na) && !isNaN(nb)) return na - nb;
+        return a.name.localeCompare(b.name);
+      });
+    const months = Object.entries(idx.months).map(([name, imgs]) => ({ name, count: imgs.length })).sort((a, b) => a.name.localeCompare(b.name));
+    const cameras = Object.entries(idx.cameras).map(([name, imgs]) => ({ name, count: imgs.length })).sort((a, b) => b.count - a.count).slice(0, 50);
+    res.json({ tasks, months, cameras });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
 app.get("/api/images", async (req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.json({ images: [], total: 0 });
@@ -276,8 +366,31 @@ app.get("/api/images", async (req, res) => {
     const split = req.query.split || "all";
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(10000, Math.max(1, parseInt(req.query.limit, 10) || 48));
-    const { images, total } = await getImagesPaginated(datasetRoot, config, split, page, limit, req.query.reviewed);
-    res.json({ images, total });
+    const tagType = req.query.tagType || "";
+    const tagValue = req.query.tag || "";
+
+    if (tagType && tagValue) {
+      const idx = await buildTagIndex(datasetRoot, config);
+      let pool = [];
+      if (tagType === "task") pool = idx.tasks[tagValue] || [];
+      else if (tagType === "month") pool = idx.months[tagValue] || [];
+      else if (tagType === "camera") pool = idx.cameras[tagValue] || [];
+
+      let filtered = pool;
+      if (split && split !== "all") filtered = pool.filter(img => img.split === split);
+      if (req.query.reviewed === "no" || req.query.reviewed === "yes") {
+        const reviewed = await readReviewedSet(datasetRoot);
+        filtered = filtered.filter(img => {
+          const key = `${img.split}/${path.basename(img.name, path.extname(img.name))}`;
+          return req.query.reviewed === "no" ? !reviewed.has(key) : reviewed.has(key);
+        });
+      }
+      const start = (page - 1) * limit;
+      res.json({ images: filtered.slice(start, start + limit), total: filtered.length });
+    } else {
+      const { images, total } = await getImagesPaginated(datasetRoot, config, split, page, limit, req.query.reviewed);
+      res.json({ images, total });
+    }
   } catch (e) {
     res.status(500).json({ images: [], total: 0 });
   }
@@ -291,12 +404,38 @@ app.get("/api/class/:id/images", async (req, res) => {
     const classId = parseInt(req.params.id, 10);
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(10000, Math.max(1, parseInt(req.query.limit, 10) || 24));
+    const sort = req.query.sort || "";
     const index = await buildClassIndex(datasetRoot, config);
     const rels = Object.entries(index).filter(([, ids]) => ids.includes(classId)).map(([rel]) => rel);
-    const images = rels.map(rel => {
+    const images = [];
+    for (const rel of rels) {
       const name = path.basename(rel);
-      return { split: splitFromImageRel(config, rel), name, imageRel: rel, relPath: rel };
-    });
+      const split = splitFromImageRel(config, rel);
+      const item = { split, name, imageRel: rel, relPath: rel };
+      if (sort === "area_asc" || sort === "area_desc") {
+        const labelsDir = config.labelsDir?.[split];
+        let minArea = null;
+        if (labelsDir) {
+          const base = path.basename(name, path.extname(name));
+          try {
+            const content = await fs.readFile(path.join(datasetRoot, labelsDir, base + ".txt"), "utf8");
+            for (const line of content.split("\n")) {
+              const parts = line.trim().split(/\s+/);
+              if (parts.length < 5) continue;
+              if (parseInt(parts[0], 10) !== classId) continue;
+              const bw = parseFloat(parts[3]);
+              const bh = parseFloat(parts[4]);
+              const area = bw * bh;
+              if (minArea === null || area < minArea) minArea = area;
+            }
+          } catch {}
+        }
+        item.bboxArea = minArea ?? 0;
+      }
+      images.push(item);
+    }
+    if (sort === "area_asc") images.sort((a, b) => a.bboxArea - b.bboxArea);
+    else if (sort === "area_desc") images.sort((a, b) => b.bboxArea - a.bboxArea);
     const start = (page - 1) * limit;
     res.json({ images: images.slice(start, start + limit), total: images.length });
   } catch (e) {

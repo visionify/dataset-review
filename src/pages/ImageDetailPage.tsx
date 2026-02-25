@@ -12,11 +12,14 @@ export default function ImageDetailPage() {
   const { split, name } = useParams<{ split: string; name: string }>();
   const location = useLocation();
   const navigate = useNavigate();
-  const state = location.state as { fromSplit?: string; filterReviewed?: string; classId?: string; startIndex?: number } | null;
+  const state = location.state as { fromSplit?: string; filterReviewed?: string; classId?: string; classSort?: string; startIndex?: number; tagType?: string; tag?: string } | null;
 
   const fromSplit = state?.fromSplit ?? "all";
   const filterReviewed = state?.filterReviewed as "yes" | "no" | undefined;
   const filterClassId = state?.classId != null ? parseInt(state.classId, 10) : null;
+  const classSort = state?.classSort || "";
+  const tagType = state?.tagType || "";
+  const tagValue = state?.tag || "";
 
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [classColors, setClassColors] = useState<Record<number, string>>({});
@@ -70,14 +73,14 @@ export default function ImageDetailPage() {
       let hasMore = true;
       if (filterClassId != null && !isNaN(filterClassId)) {
         while (hasMore) {
-          const r = await api.getClassImages(filterClassId, page, LOAD_LIMIT);
+          const r = await api.getClassImages(filterClassId, page, LOAD_LIMIT, classSort || undefined);
           all.push(...r.images);
           hasMore = r.images.length === LOAD_LIMIT;
           page++;
         }
       } else {
         while (hasMore) {
-          const r = await api.getImages({ split: fromSplit, page, limit: LOAD_LIMIT, reviewed: filterReviewed });
+          const r = await api.getImages({ split: fromSplit, page, limit: LOAD_LIMIT, reviewed: filterReviewed, tagType: tagType || undefined, tag: tagValue || undefined });
           all.push(...r.images);
           hasMore = r.images.length === LOAD_LIMIT;
           page++;
@@ -93,11 +96,16 @@ export default function ImageDetailPage() {
       setListReady(true);
     };
     loadAll().catch(() => setListReady(true));
-  }, [fromSplit, filterReviewed, filterClassId]);
+  }, [fromSplit, filterReviewed, filterClassId, classSort, tagType, tagValue]);
 
   const currentImage = allImages[currentIdx] ?? (split && name ? { split, name, imageRel: "", relPath: "" } : null);
   const hasPrev = currentIdx > 0;
   const hasNext = currentIdx < allImages.length - 1;
+  const backLink = filterClassId != null
+    ? `/class/${filterClassId}${classSort ? `?sort=${classSort}` : ""}`
+    : tagType && tagValue
+      ? `/images/${fromSplit}?tagType=${encodeURIComponent(tagType)}&tag=${encodeURIComponent(tagValue)}`
+      : `/images/${fromSplit}`;
 
   // Load annotations + tags + reviewed status when image changes
   useEffect(() => {
@@ -123,12 +131,22 @@ export default function ImageDetailPage() {
       setTagList(Object.entries(tagObj).map(([k, v]) => [k, String(v ?? "")]));
       const key = `${s}/${b}`;
       setIsReviewed(rev.reviewed.includes(key));
+      if (filterClassId != null && classSort.startsWith("area") && ann.length > 0) {
+        let smallestIdx = -1;
+        let smallestArea = Infinity;
+        ann.forEach((box: BBox, i: number) => {
+          if (box.classId !== filterClassId) return;
+          const area = box.w * box.h;
+          if (area < smallestArea) { smallestArea = area; smallestIdx = i; }
+        });
+        if (smallestIdx >= 0) setSelectedIndex(smallestIdx);
+      }
     }).catch(() => { if (!stale) { setBoxes([]); setTagList([]); } });
 
     // Update URL to match current image (without full page reload)
     const url = `/image/${encodeURIComponent(s)}/${encodeURIComponent(n)}`;
     if (location.pathname !== url)
-      navigate(url, { replace: true, state: { fromSplit, filterReviewed, classId: state?.classId, startIndex: currentIdx } });
+      navigate(url, { replace: true, state: { fromSplit, filterReviewed, classId: state?.classId, classSort: state?.classSort, startIndex: currentIdx, tagType: tagType || undefined, tag: tagValue || undefined } });
 
     return () => { stale = true; };
   }, [currentIdx, currentImage?.split, currentImage?.name]);
@@ -195,11 +213,11 @@ export default function ImageDetailPage() {
       await api.deleteImage(currentImage.split, currentImage.name);
       const newList = allImages.filter((_, i) => i !== currentIdx);
       setAllImages(newList);
-      if (newList.length === 0) { navigate(filterClassId != null ? `/class/${filterClassId}` : `/images/${fromSplit}`, { replace: true }); return; }
+      if (newList.length === 0) { navigate(backLink, { replace: true }); return; }
       setCurrentIdx(Math.min(currentIdx, newList.length - 1));
     } catch (e) { setMessage(e instanceof Error ? e.message : "Delete failed"); }
     finally { setDeleting(false); }
-  }, [currentImage, allImages, currentIdx, fromSplit, navigate]);
+  }, [currentImage, allImages, currentIdx, backLink, navigate]);
 
   // Cycle class on selected box
   const cycleBoxClass = useCallback(() => {
@@ -301,8 +319,6 @@ export default function ImageDetailPage() {
   const updateTag = (i: number, k: 0 | 1, v: string) =>
     setTagList(prev => prev.map((row, j) => j === i ? (k === 0 ? [v, row[1]] : [row[0], v]) : row));
   const removeTag = (i: number) => setTagList(prev => prev.filter((_, j) => j !== i));
-
-  const backLink = filterClassId != null ? `/class/${filterClassId}` : `/images/${fromSplit}`;
 
   if (!currentImage) {
     return (
@@ -416,17 +432,34 @@ export default function ImageDetailPage() {
 
       {/* Bottom status */}
       <div style={{ minHeight: "36px", borderTop: "1px solid var(--color-border)", display: "flex", alignItems: "center", padding: "0.25rem 0.75rem", gap: "0.5rem", flexWrap: "wrap", background: "var(--color-surface)", fontSize: "0.85rem" }}>
-        {selectedIndex !== null && boxes[selectedIndex] != null ? (
-          <>
-            <span>Class:</span>
-            <select className="input" style={{ width: "auto", padding: "0.2rem 0.4rem" }} value={boxes[selectedIndex]!.classId} onChange={e => handleSelectedClassChange(parseInt(e.target.value, 10))}>
-              {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-            <button type="button" className="btn btn-ghost" style={{ padding: "0.2rem 0.4rem" }} onClick={() => { setBoxes(prev => prev.filter((_, i) => i !== selectedIndex)); setSelectedIndex(null); }}>Delete box</button>
-            <span style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>C to cycle class</span>
-          </>
-        ) : (
+        {selectedIndex !== null && boxes[selectedIndex] != null ? (() => {
+          const selBox = boxes[selectedIndex]!;
+          const area = selBox.w * selBox.h;
+          return (
+            <>
+              <span>Class:</span>
+              <select className="input" style={{ width: "auto", padding: "0.2rem 0.4rem" }} value={selBox.classId} onChange={e => handleSelectedClassChange(parseInt(e.target.value, 10))}>
+                {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <span style={{
+                fontSize: "0.8rem", padding: "1px 6px", borderRadius: 3,
+                background: area < 0.001 ? "rgba(239,68,68,0.15)" : area < 0.005 ? "rgba(234,179,8,0.15)" : "rgba(0,0,0,0.06)",
+                color: area < 0.001 ? "var(--color-danger)" : area < 0.005 ? "#b45309" : "var(--color-text-muted)",
+                fontVariantNumeric: "tabular-nums",
+              }}>
+                area: {(area * 100).toFixed(3)}%
+              </span>
+              <button type="button" className="btn btn-ghost" style={{ padding: "0.2rem 0.4rem" }} onClick={() => { setBoxes(prev => prev.filter((_, i) => i !== selectedIndex)); setSelectedIndex(null); }}>Delete box</button>
+              <span style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>C to cycle class</span>
+            </>
+          );
+        })() : (
           <span style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>Drag to draw · Click box to select/resize · D delete box · Space = approve & next</span>
+        )}
+        {classSort && (
+          <span style={{ marginLeft: "auto", fontSize: "0.75rem", color: "var(--color-text-muted)", background: "rgba(0,0,0,0.06)", padding: "1px 6px", borderRadius: 3 }}>
+            sorted by {classSort === "area_asc" ? "smallest area" : "largest area"}
+          </span>
         )}
       </div>
     </div>

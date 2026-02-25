@@ -1,19 +1,20 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/api";
+import type { TagGroup } from "@/api";
 import type { ClassItem, ImageItem } from "@/types";
 
 export default function ClassesPage() {
   const [summary, setSummary] = useState<Awaited<ReturnType<typeof api.getSummary>> | null>(null);
   const [samplesByClass, setSamplesByClass] = useState<Record<number, ImageItem[]>>({});
+  const [autoTags, setAutoTags] = useState<{ tasks: TagGroup[]; months: TagGroup[]; cameras: TagGroup[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
-    api
-      .getSummary()
-      .then((data) => {
+    Promise.all([
+      api.getSummary().then((data) => {
         setSummary(data);
         if (data.configured && data.classes?.length) {
           return Promise.all(
@@ -24,7 +25,9 @@ export default function ClassesPage() {
             setSamplesByClass(Object.fromEntries(pairs));
           });
         }
-      })
+      }),
+      api.getAutoTags().then(setAutoTags).catch(() => {}),
+    ])
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
       .finally(() => setLoading(false));
   }, []);
@@ -81,6 +84,20 @@ export default function ClassesPage() {
           <ClassCard key={cls.id} cls={cls} samples={samplesByClass[cls.id] ?? []} />
         ))}
       </div>
+
+      {autoTags && (autoTags.months.length > 0 || autoTags.tasks.length > 0 || autoTags.cameras.length > 0) && (
+        <>
+          {autoTags.months.length > 0 && (
+            <TagRow title="Dates" tags={autoTags.months} tagType="month" color="oklch(0.65 0.15 250)" />
+          )}
+          {autoTags.tasks.length > 0 && (
+            <TagRow title="Tasks" tags={autoTags.tasks} tagType="task" color="oklch(0.65 0.15 145)" />
+          )}
+          {autoTags.cameras.length > 0 && (
+            <TagRow title="Cameras" tags={autoTags.cameras} tagType="camera" color="oklch(0.65 0.12 50)" />
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -94,6 +111,38 @@ function StatCard({ label, value, color, link }: { label: string; value: string 
   );
   if (link) return <Link to={link} style={{ textDecoration: "none", color: "inherit" }}>{content}</Link>;
   return content;
+}
+
+function TagRow({ title, tags, tagType, color }: { title: string; tags: TagGroup[]; tagType: string; color: string }) {
+  return (
+    <div>
+      <h2 style={{ fontSize: "1.1rem", marginBottom: "0.5rem" }}>{title}</h2>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
+        {tags.map((t) => (
+          <Link
+            key={t.name}
+            to={`/images/all?tagType=${encodeURIComponent(tagType)}&tag=${encodeURIComponent(t.name)}`}
+            style={{
+              textDecoration: "none",
+              padding: "0.3rem 0.6rem",
+              borderRadius: "var(--radius-sm)",
+              background: `color-mix(in oklch, ${color} 15%, transparent)`,
+              border: `1px solid color-mix(in oklch, ${color} 30%, transparent)`,
+              color: "var(--color-text)",
+              fontSize: "0.85rem",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.35rem",
+              transition: "background 0.15s",
+            }}
+          >
+            <span style={{ fontWeight: 600 }}>{t.name}</span>
+            <span style={{ fontSize: "0.75rem", color: "var(--color-text-muted)" }}>{t.count}</span>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ClassCard({ cls, samples }: { cls: ClassItem; samples: ImageItem[] }) {

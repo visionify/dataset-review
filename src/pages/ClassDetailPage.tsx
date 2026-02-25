@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api } from "@/api";
 import { ClassGalleryView } from "@/components/ClassGalleryView";
 import type { ClassItem, ImageItem } from "@/types";
 
-const PAGE_SIZE = 24;
+const PAGE_SIZE = 50;
+
+type SortMode = "" | "area_asc" | "area_desc";
 
 export default function ClassDetailPage() {
   const { classId } = useParams<{ classId: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [page, setPage] = useState(0);
   const [accumulatedImages, setAccumulatedImages] = useState<ImageItem[]>([]);
@@ -16,6 +19,15 @@ export default function ClassDetailPage() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [viewMode, setViewMode] = useState<"grid" | "list" | "gallery">("grid");
+
+  const sortBy = (searchParams.get("sort") || "") as SortMode;
+  const setSortBy = (v: SortMode) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (v) next.set("sort", v); else next.delete("sort");
+      return next;
+    }, { replace: true });
+  };
 
   const id = classId ? parseInt(classId, 10) : NaN;
 
@@ -27,22 +39,23 @@ export default function ClassDetailPage() {
     if (!classId || isNaN(id)) return;
     setLoading(true);
     setAccumulatedImages([]);
+    setPage(0);
     setNextPageToLoad(1);
     api
-      .getClassImages(id, 1, PAGE_SIZE)
+      .getClassImages(id, 1, PAGE_SIZE, sortBy || undefined)
       .then((r) => {
         setAccumulatedImages(r.images);
         setTotal(r.total);
         setNextPageToLoad(2);
       })
       .finally(() => setLoading(false));
-  }, [classId, id]);
+  }, [classId, id, sortBy]);
 
   const loadMore = () => {
     if (loadingMore || nextPageToLoad <= 0 || accumulatedImages.length >= total) return;
     setLoadingMore(true);
     api
-      .getClassImages(id, nextPageToLoad, PAGE_SIZE)
+      .getClassImages(id, nextPageToLoad, PAGE_SIZE, sortBy || undefined)
       .then((r) => {
         setAccumulatedImages((prev) => [...prev, ...r.images]);
         setNextPageToLoad((p) => p + 1);
@@ -69,7 +82,17 @@ export default function ClassDetailPage() {
           <h1 style={{ fontSize: "1.35rem", fontWeight: 600 }}>{cls?.name ?? `Class ${classId}`}</h1>
           <span style={{ color: "var(--color-text-muted)", fontSize: "0.9rem" }}>{total} images</span>
         </div>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <select
+            className="input"
+            style={{ width: "auto", padding: "0.3rem 0.4rem", fontSize: "0.85rem" }}
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value as "" | "area_asc" | "area_desc")}
+          >
+            <option value="">Default order</option>
+            <option value="area_asc">BBox area (smallest first)</option>
+            <option value="area_desc">BBox area (largest first)</option>
+          </select>
           <button
             className={`btn ${viewMode === "grid" ? "btn-primary" : "btn-ghost"}`}
             onClick={() => setViewMode("grid")}
@@ -105,7 +128,7 @@ export default function ClassDetailPage() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: viewMode === "grid" ? "repeat(auto-fill, minmax(140px, 1fr))" : "1fr",
+              gridTemplateColumns: viewMode === "grid" ? "repeat(auto-fill, minmax(200px, 1fr))" : "1fr",
               gap: "0.5rem",
             }}
           >
@@ -113,7 +136,7 @@ export default function ClassDetailPage() {
               <Link
                 key={img.imageRel}
                 to={`/image/${encodeURIComponent(img.split)}/${encodeURIComponent(img.name)}`}
-                state={{ list: accumulatedImages, index: page * PAGE_SIZE + idx, classId }}
+                state={{ list: accumulatedImages, index: page * PAGE_SIZE + idx, classId, classSort: sortBy || undefined }}
                 className="card"
                 style={{
                   padding: viewMode === "list" ? "0.5rem 0.75rem" : 0,
@@ -123,6 +146,7 @@ export default function ClassDetailPage() {
                   gap: viewMode === "list" ? "1rem" : 0,
                   textDecoration: "none",
                   color: "inherit",
+                  position: "relative",
                 }}
               >
                 <div style={{ aspectRatio: "1", minWidth: viewMode === "list" ? 80 : undefined, background: "var(--color-border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
@@ -133,8 +157,20 @@ export default function ClassDetailPage() {
                     loading="lazy"
                   />
                 </div>
+                {img.bboxArea != null && (
+                  <span style={{
+                    position: "absolute", bottom: viewMode === "list" ? "auto" : 4, right: 4, top: viewMode === "list" ? 4 : "auto",
+                    background: img.bboxArea < 0.001 ? "rgba(239,68,68,0.85)" : img.bboxArea < 0.005 ? "rgba(234,179,8,0.85)" : "rgba(0,0,0,0.55)",
+                    color: "#fff", fontSize: "0.65rem", padding: "1px 4px", borderRadius: 3, fontVariantNumeric: "tabular-nums",
+                  }}>
+                    {(img.bboxArea * 100).toFixed(2)}%
+                  </span>
+                )}
                 {viewMode === "list" && (
-                  <span style={{ fontSize: "0.9rem", color: "var(--color-text-muted)" }}>{img.name}</span>
+                  <span style={{ fontSize: "0.9rem", color: "var(--color-text-muted)" }}>
+                    {img.name}
+                    {img.bboxArea != null && <span style={{ marginLeft: "0.5rem", fontSize: "0.8rem", color: img.bboxArea < 0.001 ? "var(--color-danger)" : "var(--color-text-muted)" }}>area: {(img.bboxArea * 100).toFixed(3)}%</span>}
+                  </span>
                 )}
               </Link>
             ))}

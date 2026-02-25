@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, imageBase } from "@/api";
 import type { ImageItem } from "@/types";
 
@@ -7,6 +7,9 @@ const PAGE_SIZE = 48;
 
 export default function ImagesPage() {
   const { split } = useParams<{ split: string }>();
+  const [searchParams] = useSearchParams();
+  const tagType = searchParams.get("tagType") || "";
+  const tagValue = searchParams.get("tag") || "";
   const [summary, setSummary] = useState<Awaited<ReturnType<typeof api.getSummary>> | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -31,15 +34,15 @@ export default function ImagesPage() {
   const loadPage = useCallback(() => {
     if (!summary?.configured) { setLoading(false); return; }
     setLoading(true);
-    api.getImages({ split: effectiveSplit, page: page + 1, limit: PAGE_SIZE, reviewed: filterReviewed === "no" ? "no" : undefined })
+    api.getImages({ split: effectiveSplit, page: page + 1, limit: PAGE_SIZE, reviewed: filterReviewed === "no" ? "no" : undefined, tagType: tagType || undefined, tag: tagValue || undefined })
       .then(r => { setImages(r.images); setTotal(r.total); })
       .finally(() => setLoading(false));
-  }, [summary?.configured, effectiveSplit, page, filterReviewed]);
+  }, [summary?.configured, effectiveSplit, page, filterReviewed, tagType, tagValue]);
 
   useEffect(() => { loadPage(); }, [loadPage]);
 
-  // Clear selection and show-all when changing split/filter
-  useEffect(() => { setSelected(new Set()); setShowAll(false); setAllImages([]); }, [effectiveSplit, filterReviewed]);
+  // Clear selection and show-all when changing split/filter/tag
+  useEffect(() => { setSelected(new Set()); setShowAll(false); setAllImages([]); setPage(0); }, [effectiveSplit, filterReviewed, tagType, tagValue]);
   useEffect(() => { if (!showAll) setSelected(new Set()); }, [page]);
 
   const toggleSelect = (img: ImageItem) => {
@@ -68,7 +71,7 @@ export default function ImagesPage() {
       let pg = 1;
       let hasMore = true;
       while (hasMore) {
-        const r = await api.getImages({ split: effectiveSplit, page: pg, limit: 5000, reviewed: filterReviewed === "no" ? "no" : undefined });
+        const r = await api.getImages({ split: effectiveSplit, page: pg, limit: 5000, reviewed: filterReviewed === "no" ? "no" : undefined, tagType: tagType || undefined, tag: tagValue || undefined });
         accumulated.push(...r.images);
         hasMore = r.images.length === 5000;
         pg++;
@@ -78,7 +81,7 @@ export default function ImagesPage() {
       setShowAll(true);
     } catch {}
     finally { setLoadingAll(false); }
-  }, [effectiveSplit, filterReviewed]);
+  }, [effectiveSplit, filterReviewed, tagType, tagValue]);
 
   const handleDeleteSelected = async () => {
     if (!selected.size) return;
@@ -129,6 +132,12 @@ export default function ImagesPage() {
           <h1 style={{ fontSize: "1.35rem" }}>
             {effectiveSplit === "all" ? "All Images" : effectiveSplit === "train" ? "Training" : effectiveSplit === "val" ? "Validation" : "Test"}
           </h1>
+          {tagValue && (
+            <span style={{ fontSize: "0.85rem", padding: "0.2rem 0.5rem", borderRadius: "var(--radius-sm)", background: "oklch(0.65 0.12 250 / 0.15)", border: "1px solid oklch(0.65 0.12 250 / 0.3)" }}>
+              {tagType}: <strong>{tagValue}</strong>
+              <Link to={`/images/${effectiveSplit}`} style={{ marginLeft: "0.4rem", color: "var(--color-text-muted)", textDecoration: "none" }}>×</Link>
+            </span>
+          )}
           <span style={{ color: "var(--color-text-muted)", fontSize: "0.9rem" }}>
             {total} images
             <span style={{ marginLeft: "0.5rem" }}>· <strong style={{ color: "var(--color-text)" }}>{pctReviewed}%</strong> reviewed ({reviewedCount} / {totalImages})</span>
@@ -217,7 +226,7 @@ export default function ImagesPage() {
 
                 <Link
                   to={`/image/${encodeURIComponent(img.split)}/${encodeURIComponent(img.name)}`}
-                  state={{ fromSplit: effectiveSplit, filterReviewed: filterReviewed === "no" ? "no" : undefined, startIndex: globalIdx }}
+                  state={{ fromSplit: effectiveSplit, filterReviewed: filterReviewed === "no" ? "no" : undefined, startIndex: globalIdx, tagType: tagType || undefined, tag: tagValue || undefined }}
                   style={{ textDecoration: "none", color: "inherit" }}
                   onClick={(e) => { if (selectMode) e.preventDefault(); }}
                 >

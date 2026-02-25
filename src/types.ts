@@ -8,6 +8,7 @@ export interface ImageItem {
   name: string;
   relPath: string;
   imageRel: string;
+  bboxArea?: number;
 }
 
 export interface BBox {

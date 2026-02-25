@@ -38,6 +38,11 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return r.json();
 }
 
+export interface TagGroup {
+  name: string;
+  count: number;
+}
+
 export interface PredictionBox {
   classId: number;
   className: string;
@@ -64,14 +69,17 @@ export const api = {
   setConfig: (path: string) => post<{ ok: boolean }>("/config", { path }),
   getSummary: () => get<DatasetSummary>("/dataset/summary"),
   getValidation: () => get<{ checks: ValidationCheck[] }>("/validation"),
-  getImages: (opts: { split?: string; page?: number; limit?: number; reviewed?: "yes" | "no" }) => {
+  getImages: (opts: { split?: string; page?: number; limit?: number; reviewed?: "yes" | "no"; tagType?: string; tag?: string }) => {
     const p = new URLSearchParams();
     if (opts.split) p.set("split", opts.split);
     if (opts.page != null) p.set("page", String(opts.page));
     if (opts.limit != null) p.set("limit", String(opts.limit));
     if (opts.reviewed) p.set("reviewed", opts.reviewed);
+    if (opts.tagType) p.set("tagType", opts.tagType);
+    if (opts.tag) p.set("tag", opts.tag);
     return get<{ images: ImageItem[]; total: number }>(`/images?${p}`);
   },
+  getAutoTags: () => get<{ tasks: TagGroup[]; months: TagGroup[]; cameras: TagGroup[] }>("/auto-tags"),
   getReviewed: () => get<{ reviewed: string[] }>("/reviewed"),
   setReviewed: (split: string, base: string, reviewed: boolean) =>
     patch<{ reviewed: string[] }>("/reviewed", { split, base, reviewed }),
@@ -83,8 +91,11 @@ export const api = {
       return r.json();
     });
   },
-  getClassImages: (classId: number, page: number, limit: number) =>
-    get<{ images: ImageItem[]; total: number }>(`/class/${classId}/images?page=${page}&limit=${limit}`),
+  getClassImages: (classId: number, page: number, limit: number, sort?: string) => {
+    const p = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (sort) p.set("sort", sort);
+    return get<{ images: ImageItem[]; total: number }>(`/class/${classId}/images?${p}`);
+  },
   getClassSamples: (classId: number, limit?: number) =>
     get<{ samples: ImageItem[] }>(`/class/${classId}/samples?limit=${limit ?? 8}`),
   imageUrl: (split: string, name: string) => `/api/images/${encodeURIComponent(split)}/${encodeURIComponent(name)}`,
