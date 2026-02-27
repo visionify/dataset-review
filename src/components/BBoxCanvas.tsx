@@ -97,6 +97,18 @@ export function BBoxCanvas({
     };
   };
 
+  /** Index of the smallest box containing (normX, normY), or -1 if none. Prefer inner/smaller bbox when nested. */
+  const hitSmallestContaining = (normX: number, normY: number): number => {
+    const containing = boxes
+      .map((b, i) => ({ b, i }))
+      .filter(({ b }) => {
+        const bx = b.x - b.w / 2;
+        const by = b.y - b.h / 2;
+        return normX >= bx && normX <= bx + b.w && normY >= by && normY <= by + b.h;
+      });
+    return containing.length === 0 ? -1 : containing.reduce((best, cur) => (cur.b.w * cur.b.h < best.b.w * best.b.h ? cur : best)).i;
+  };
+
   const hitHandle = (norm: { x: number; y: number }, b: BBox, imgW: number, imgH: number): ResizeHandle | null => {
     const x = (b.x - b.w / 2) * imgW;
     const y = (b.y - b.h / 2) * imgH;
@@ -129,11 +141,7 @@ export function BBoxCanvas({
       }
     }
 
-    const hit = boxes.findIndex((b) => {
-      const bx = b.x - b.w / 2;
-      const by = b.y - b.h / 2;
-      return norm.x >= bx && norm.x <= bx + b.w && norm.y >= by && norm.y <= by + b.h;
-    });
+    const hit = hitSmallestContaining(norm.x, norm.y);
     if (hit >= 0) {
       onSelect(hit);
       return;
@@ -218,10 +226,7 @@ export function BBoxCanvas({
     if (!imgSize) return;
     const norm = getNorm(e);
     if (!norm) return;
-    const hit = boxes.findIndex(b => {
-      const bx = b.x - b.w / 2, by = b.y - b.h / 2;
-      return norm.x >= bx && norm.x <= bx + b.w && norm.y >= by && norm.y <= by + b.h;
-    });
+    const hit = hitSmallestContaining(norm.x, norm.y);
     if (hit >= 0) {
       onSelect(hit);
       onDoubleClickBox?.();

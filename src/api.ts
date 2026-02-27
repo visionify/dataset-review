@@ -56,7 +56,7 @@ export interface PredictionBox {
 export interface DatasetSummary {
   configured: boolean;
   classes: ClassItem[];
-  config: { train: string; val: string; test: string | null; names: Record<number, string> } | null;
+  config: { train: string | null; val: string | null; test: string | null; names: Record<number, string> } | null;
   totalImages: number;
   reviewedCount?: number;
   splitCounts?: Record<string, number>;

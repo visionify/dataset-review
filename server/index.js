@@ -95,10 +95,44 @@ async function findDir(datasetRoot, candidates, checkImages) {
 let _cfgCache = null;
 let _cfgCachePath = null;
 
+async function parseCvatNames(datasetRoot) {
+  try {
+    const content = await fs.readFile(path.join(datasetRoot, "obj.names"), "utf8");
+    const lines = content.split("\n").map(l => l.trim()).filter(Boolean);
+    return Object.fromEntries(lines.map((name, i) => [i, name]));
+  } catch { return null; }
+}
+
+async function findCvatDataDir(datasetRoot) {
+  try {
+    const entries = await fs.readdir(datasetRoot, { withFileTypes: true });
+    const candidate = entries.find(e => e.isDirectory() && /^obj_.*data$/i.test(e.name));
+    if (candidate && await dirHasImages(path.join(datasetRoot, candidate.name))) return candidate.name;
+  } catch {}
+  return null;
+}
+
 async function resolveConfig(datasetRoot) {
   if (_cfgCache && _cfgCachePath === datasetRoot) return _cfgCache;
 
-  // 1. Find and parse YAML
+  // Check for CVAT export format (obj.names + obj_*_data folder)
+  const cvatNames = await parseCvatNames(datasetRoot);
+  const cvatDataDir = await findCvatDataDir(datasetRoot);
+
+  if (cvatNames && cvatDataDir) {
+    const cfg = {
+      names: cvatNames,
+      train: cvatDataDir,
+      val: null,
+      test: null,
+      labelsDir: { train: cvatDataDir, val: null, test: null },
+    };
+    _cfgCache = cfg;
+    _cfgCachePath = datasetRoot;
+    return cfg;
+  }
+
+  // Standard YOLO format — find and parse YAML
   let yamlData = null;
   for (const name of ["data.yaml", "dataset.yaml", "dataset_weighted.yaml"]) {
     try {
@@ -108,12 +142,12 @@ async function resolveConfig(datasetRoot) {
   }
   const names = yamlData ? normalizeClassNames(yamlData) : {};
 
-  // 2. Probe filesystem for image directories
+  // Probe filesystem for image directories
   const trainImgs = await findDir(datasetRoot, ["images/train", "train/images", "train"], true);
   const valImgs   = await findDir(datasetRoot, ["images/val", "images/valid", "valid/images", "val/images", "val", "valid"], true);
   const testImgs  = await findDir(datasetRoot, ["images/test", "test/images", "test"], true);
 
-  // 3. Probe for label directories
+  // Probe for label directories
   const trainLabels = await findDir(datasetRoot, ["labels/train", "train/labels"], false);
   const valLabels   = await findDir(datasetRoot, ["labels/val", "labels/valid", "valid/labels", "val/labels"], false);
   const testLabels  = await findDir(datasetRoot, ["labels/test", "test/labels"], false);
