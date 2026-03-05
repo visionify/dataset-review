@@ -5,7 +5,7 @@ import type { ValidationCheck, ImageItem } from "@/types";
 
 const ITEMS_PER_PAGE = 48;
 
-interface DupItem extends ImageItem { dupCount?: number; hash?: string; originalName?: string; originalSplit?: string }
+interface DupItem extends ImageItem { dupCount?: number; smallCount?: number; hash?: string; originalName?: string; originalSplit?: string }
 
 export default function ValidationPage() {
   const [checks, setChecks] = useState<ValidationCheck[]>([]);
@@ -75,6 +75,19 @@ export default function ValidationPage() {
     finally { setActing(false); setTimeout(() => setActionMsg(null), 5000); }
   };
 
+  const handleDeleteSmallBboxes = async () => {
+    const count = checks.find(c => c.id === "small_bboxes")?.count ?? 0;
+    if (!count) return;
+    if (!window.confirm(`Remove ${count} bbox(es) that are smaller than 0.1% of image area across all label files? This cannot be undone.`)) return;
+    setActing(true); setActionMsg(null);
+    try {
+      const r = await api.deleteSmallBboxes();
+      setActionMsg(`Removed ${r.removed} small bbox(es) from ${r.filesUpdated} file(s).`);
+      loadChecks();
+    } catch (e) { setActionMsg(e instanceof Error ? e.message : "Failed"); }
+    finally { setActing(false); setTimeout(() => setActionMsg(null), 5000); }
+  };
+
   if (loading) return <p style={{ color: "var(--color-text-muted)" }}>Loading validation…</p>;
   if (error) return <p style={{ color: "var(--color-danger)" }}>{error}</p>;
 
@@ -92,7 +105,7 @@ export default function ValidationPage() {
 
       <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
         {checks.map((c) => {
-          const isImageList = (c.id === "missing_labels" || c.id === "empty_labels" || c.id === "duplicate_labels" || c.id === "duplicate_images") && Array.isArray(c.detail);
+          const isImageList = (c.id === "missing_labels" || c.id === "empty_labels" || c.id === "duplicate_labels" || c.id === "duplicate_images" || c.id === "small_bboxes") && Array.isArray(c.detail);
           const isExpanded = expandedId === c.id;
           const imageItems: DupItem[] = isImageList ? (c.detail as DupItem[]) : [];
           const currentPage = pages[c.id] ?? 0;
@@ -149,6 +162,16 @@ export default function ValidationPage() {
                       {acting ? "Deleting…" : `Remove ${c.count} duplicates`}
                     </button>
                   )}
+                  {c.id === "small_bboxes" && c.count > 0 && (
+                    <button
+                      className="btn btn-ghost"
+                      style={{ padding: "0.25rem 0.6rem", fontSize: "0.85rem", color: "var(--color-danger)" }}
+                      onClick={(e) => { e.stopPropagation(); handleDeleteSmallBboxes(); }}
+                      disabled={acting}
+                    >
+                      {acting ? "Removing…" : `Delete all small bboxes (${c.count})`}
+                    </button>
+                  )}
                   <span
                     style={{
                       fontSize: "0.85rem", padding: "0.2rem 0.5rem", borderRadius: "var(--radius-sm)",
@@ -169,6 +192,11 @@ export default function ValidationPage() {
               {c.id === "duplicate_images" && c.count > 0 && (
                 <p style={{ fontSize: "0.85rem", color: "var(--color-text-muted)", marginBottom: "0.25rem" }}>
                   {c.count} duplicate images found (first occurrence of each will be kept)
+                </p>
+              )}
+              {c.id === "small_bboxes" && c.count > 0 && (
+                <p style={{ fontSize: "0.85rem", color: "var(--color-text-muted)", marginBottom: "0.25rem" }}>
+                  {c.count} bbox(es) smaller than 0.1% of image area — remove in one go or open images to review.
                 </p>
               )}
 
@@ -196,10 +224,11 @@ export default function ValidationPage() {
                           <div style={{ padding: "0.25rem 0.4rem", fontSize: "0.7rem", color: "var(--color-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {img.name}
                             {img.dupCount != null && <span style={{ marginLeft: "0.25rem", color: "var(--color-warning)" }}>({img.dupCount} dup)</span>}
+                            {img.smallCount != null && <span style={{ marginLeft: "0.25rem", color: "var(--color-danger)" }}>({img.smallCount} small)</span>}
                             {img.originalName && <span style={{ marginLeft: "0.25rem", color: "var(--color-warning)" }} title={`Original: ${img.originalSplit}/${img.originalName}`}>⇒ dup</span>}
                           </div>
                         </Link>
-                        {c.id !== "duplicate_labels" && c.id !== "duplicate_images" && (
+                        {c.id !== "duplicate_labels" && c.id !== "duplicate_images" && c.id !== "small_bboxes" && (
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); handleDelete(img, c.id); }}

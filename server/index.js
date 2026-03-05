@@ -586,6 +586,9 @@ app.put("/api/tags/:split/:base", async (req, res) => {
   res.json({ ok: true });
 });
 
+// Threshold for "small bbox": area as fraction of image (0.1% = 0.001). YOLO format uses normalized w,h so area = w*h.
+const SMALL_BBOX_AREA_THRESHOLD = 0.001;
+
 // Validation checks
 app.get("/api/validation", async (_req, res) => {
   const datasetRoot = getDatasetPath();
@@ -593,8 +596,9 @@ app.get("/api/validation", async (_req, res) => {
   try {
     const config = await resolveConfig(datasetRoot);
     const images = await collectAllImages(datasetRoot, config);
-    const missingLabels = [], emptyLabels = [], duplicateLabels = [], classCounts = {};
+    const missingLabels = [], emptyLabels = [], duplicateLabels = [], smallBboxes = [], classCounts = {};
     let totalDupLines = 0;
+    let totalSmallBboxes = 0;
     for (const img of images) {
       const labelsRel = config.labelsDir?.[img.split];
       if (!labelsRel) { missingLabels.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath }); continue; }
@@ -609,7 +613,20 @@ app.get("/api/validation", async (_req, res) => {
           totalDupLines += dupCount;
           duplicateLabels.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath, dupCount });
         }
-        for (const line of lines) { const c = parseInt(line.trim().split(/\s+/)[0], 10); classCounts[c] = (classCounts[c] || 0) + 1; }
+        let smallCount = 0;
+        for (const line of lines) {
+          const p = line.trim().split(/\s+/).map(Number);
+          if (p.length >= 5) {
+            const area = p[3] * p[4];
+            if (area < SMALL_BBOX_AREA_THRESHOLD) smallCount++;
+            const c = parseInt(p[0], 10);
+            classCounts[c] = (classCounts[c] || 0) + 1;
+          }
+        }
+        if (smallCount > 0) {
+          totalSmallBboxes += smallCount;
+          smallBboxes.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath, smallCount });
+        }
       } catch { missingLabels.push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath }); }
     }
     // Detect duplicate images by MD5 hash
@@ -639,6 +656,7 @@ app.get("/api/validation", async (_req, res) => {
       { id: "empty_labels", name: "Label files with no objects", count: emptyLabels.length, severity: "info", detail: emptyLabels },
       { id: "duplicate_labels", name: "Images with duplicate labels", count: duplicateLabels.length, severity: duplicateLabels.length ? "warning" : "ok", detail: duplicateLabels, extra: { totalDupLines } },
       { id: "duplicate_images", name: "Duplicate images (by MD5)", count: duplicateImages.length, severity: duplicateImages.length ? "warning" : "ok", detail: duplicateImages, extra: { totalDupImages } },
+      { id: "small_bboxes", name: "Bboxes smaller than 0.1% of image", count: totalSmallBboxes, severity: totalSmallBboxes ? "warning" : "ok", detail: smallBboxes, extra: { filesAffected: smallBboxes.length } },
       { id: "class_balance", name: "Class distribution", count: Object.keys(classCounts).length, severity: "ok", detail: classCounts },
     ]});
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
@@ -725,6 +743,44 @@ app.post("/api/validation/delete-missing-labels", async (_req, res) => {
     }
     invalidateConfigCache();
     res.json({ ok: true, deleted });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// Bulk-remove bbox lines that are smaller than 0.1% of image area (normalized w*h < 0.001)
+app.post("/api/validation/delete-small-bboxes", async (_req, res) => {
+  const datasetRoot = getDatasetPath();
+  if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
+  try {
+    const config = await resolveConfig(datasetRoot);
+    const images = await collectAllImages(datasetRoot, config);
+    let removed = 0;
+    let filesUpdated = 0;
+    for (const img of images) {
+      const labelsRel = config.labelsDir?.[img.split];
+      if (!labelsRel) continue;
+      const base = path.basename(img.name, path.extname(img.name));
+      const labelPath = path.join(datasetRoot, labelsRel, base + ".txt");
+      try {
+        const content = await fs.readFile(labelPath, "utf8");
+        const lines = content.split("\n").filter(l => l.trim());
+        const kept = [];
+        let fileRemoved = 0;
+        for (const line of lines) {
+          const p = line.trim().split(/\s+/).map(Number);
+          if (p.length < 5) { kept.push(line); continue; }
+          const area = p[3] * p[4];
+          if (area >= SMALL_BBOX_AREA_THRESHOLD) kept.push(line);
+          else fileRemoved++;
+        }
+        if (fileRemoved > 0) {
+          await fs.writeFile(labelPath, kept.join("\n") + (kept.length ? "\n" : ""), "utf8");
+          removed += fileRemoved;
+          filesUpdated++;
+        }
+      } catch {}
+    }
+    invalidateConfigCache();
+    res.json({ ok: true, removed, filesUpdated });
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
 

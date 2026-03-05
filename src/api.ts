@@ -112,6 +112,7 @@ export const api = {
   fixDuplicateLabels: () => post<{ ok: boolean; filesFixed: number; linesRemoved: number }>("/validation/fix-duplicates", {}),
   deleteMissingLabelImages: () => post<{ ok: boolean; deleted: number }>("/validation/delete-missing-labels", {}),
   deleteDuplicateImages: () => post<{ ok: boolean; deleted: number }>("/validation/delete-duplicate-images", {}),
+  deleteSmallBboxes: () => post<{ ok: boolean; removed: number; filesUpdated: number }>("/validation/delete-small-bboxes", {}),
 
   // Inference
   inferenceHealth: () => get<{ status: string; model_loaded: boolean; model_path: string | null }>("/inference/health"),
