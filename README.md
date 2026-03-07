@@ -225,8 +225,7 @@ For integration or scripting, the backend exposes:
 
 ## License
 
-Use and adapt as you like. If you found this useful, a star or link back is appreciated.
+Use and adapt as you like. If you found this useful, a star or link back is appreciated. You can also visit our website at [www.visionify.ai](https://visionify.ai) for our Workplace Safety Software.
 
 ---
 
-*Add your own screenshots under `docs/screenshots/` and replace the placeholder image paths above (e.g. `dashboard.png`, `config.png`, `classes.png`, `images.png`, `annotation.png`, `validation.png`).*
