@@ -3,7 +3,7 @@
 A **local web app** for reviewing, annotating, and cleaning YOLO-format object-detection datasets. Point it at a folder, browse images and labels, fix boxes, run validation checks, and optionally use a trained YOLO model to auto-detect and accept predictions—all in the browser with no data leaving your machine.
 
 ![Dashboard overview](docs/screenshots/dashboard.png)  
-*Dashboard: class stats, sample thumbnails, and review progress. (Add your screenshot here.)*
+*Dashboard: class stats, sample thumbnails, and review progress.*
 
 ---
 
@@ -51,7 +51,7 @@ Open **http://localhost:5173** in your browser.
 3. Click **Save**. The app will load the dataset and you’ll see **Classes** (dashboard) and **All Images** in the nav.
 
 ![Dataset config](docs/screenshots/config.png)  
-*Dataset page: paste or drag-drop your dataset path. (Add your screenshot here.)*
+*Dataset page: paste or drag-drop your dataset path. *
 
 ---
 
@@ -71,7 +71,7 @@ Open **http://localhost:5173** in your browser.
 - If your dataset has tag metadata (e.g. dates, tasks, cameras), you’ll see filter chips to narrow the image list.
 
 ![Classes dashboard](docs/screenshots/classes.png)  
-*Classes dashboard with stats and sample thumbnails. (Add your screenshot here.)*
+*Classes dashboard with stats and sample thumbnails. *
 
 ### 3. Browse images (**All Images**, **Training**, **Validation**, **Test**)
 
@@ -80,7 +80,7 @@ Open **http://localhost:5173** in your browser.
 - Click an image to open the **annotation view** for that image.
 
 ![Image grid](docs/screenshots/images.png)  
-*Image grid with split and filters. (Add your screenshot here.)*
+*Image grid with split and filters. *
 
 ### 4. Annotate and review (**Image detail**)
 
@@ -91,7 +91,7 @@ Open **http://localhost:5173** in your browser.
 - **Auto-detect** (optional) — If the inference server is running and a model is loaded (see Settings), use **A** or the “Auto-detect” button. Predictions appear as dashed boxes; click one to accept it, or “Accept all” to merge all into the label file.
 
 ![Annotation view](docs/screenshots/annotation.png)  
-*Annotation view: boxes, class list, and optional predictions. (Add your screenshot here.)*
+*Annotation view: boxes, class list, and optional predictions.*
 
 ### 5. Run validation (**Validation checks**)
 
@@ -100,7 +100,7 @@ Open **http://localhost:5173** in your browser.
 - For many checks you can **fix** in bulk (e.g. remove duplicate label lines, delete images without labels, remove duplicate images, drop tiny boxes).
 
 ![Validation page](docs/screenshots/validation.png)  
-*Validation checks and fix actions. (Add your screenshot here.)*
+*Validation checks and fix actions. *
 
 ### 6. Customize (**Settings**)
 
