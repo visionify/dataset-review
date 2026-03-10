@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api } from "@/api";
 import { ClassGalleryView } from "@/components/ClassGalleryView";
@@ -12,12 +12,10 @@ export default function ClassDetailPage() {
   const { classId } = useParams<{ classId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const [classes, setClasses] = useState<ClassItem[]>([]);
-  const [page, setPage] = useState(0);
-  const [accumulatedImages, setAccumulatedImages] = useState<ImageItem[]>([]);
+  const [images, setImages] = useState<ImageItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [nextPageToLoad, setNextPageToLoad] = useState(1);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [viewMode, setViewMode] = useState<"grid" | "list" | "gallery">("grid");
 
   const sortBy = (searchParams.get("sort") || "") as SortMode;
@@ -35,44 +33,27 @@ export default function ClassDetailPage() {
     api.getSummary().then((s) => setClasses(s.classes ?? [])).catch(() => {});
   }, []);
 
-  useEffect(() => {
+  // Reset to page 1 when sort changes
+  useEffect(() => { setPage(1); }, [sortBy]);
+
+  const loadPage = useCallback(() => {
     if (!classId || isNaN(id)) return;
     setLoading(true);
-    setAccumulatedImages([]);
-    setPage(0);
-    setNextPageToLoad(1);
     api
-      .getClassImages(id, 1, PAGE_SIZE, sortBy || undefined)
-      .then((r) => {
-        setAccumulatedImages(r.images);
-        setTotal(r.total);
-        setNextPageToLoad(2);
-      })
+      .getClassImages(id, page, PAGE_SIZE, sortBy || undefined)
+      .then((r) => { setImages(r.images); setTotal(r.total); })
       .finally(() => setLoading(false));
-  }, [classId, id, sortBy]);
+  }, [classId, id, page, sortBy]);
 
-  const loadMore = () => {
-    if (loadingMore || nextPageToLoad <= 0 || accumulatedImages.length >= total) return;
-    setLoadingMore(true);
-    api
-      .getClassImages(id, nextPageToLoad, PAGE_SIZE, sortBy || undefined)
-      .then((r) => {
-        setAccumulatedImages((prev) => [...prev, ...r.images]);
-        setNextPageToLoad((p) => p + 1);
-      })
-      .finally(() => setLoadingMore(false));
-  };
+  useEffect(() => { loadPage(); }, [loadPage]);
 
-  const hasMore = accumulatedImages.length < total && total > 0;
-  const totalPages = Math.max(1, Math.ceil(accumulatedImages.length / PAGE_SIZE));
-  const gridImages = viewMode === "gallery" ? accumulatedImages : accumulatedImages.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const cls = classes.find((c) => c.id === id);
 
   if (!classId) return null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      {/* Class-centric breadcrumb: Classes > Class name */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "0.75rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
           <Link to="/" className="btn btn-ghost" style={{ padding: "0.35rem 0.5rem" }}>
@@ -87,30 +68,15 @@ export default function ClassDetailPage() {
             className="input"
             style={{ width: "auto", padding: "0.3rem 0.4rem", fontSize: "0.85rem" }}
             value={sortBy}
-            onChange={e => setSortBy(e.target.value as "" | "area_asc" | "area_desc")}
+            onChange={e => setSortBy(e.target.value as SortMode)}
           >
             <option value="">Default order</option>
             <option value="area_asc">BBox area (smallest first)</option>
             <option value="area_desc">BBox area (largest first)</option>
           </select>
-          <button
-            className={`btn ${viewMode === "grid" ? "btn-primary" : "btn-ghost"}`}
-            onClick={() => setViewMode("grid")}
-          >
-            Grid
-          </button>
-          <button
-            className={`btn ${viewMode === "list" ? "btn-primary" : "btn-ghost"}`}
-            onClick={() => setViewMode("list")}
-          >
-            List
-          </button>
-          <button
-            className={`btn ${viewMode === "gallery" ? "btn-primary" : "btn-ghost"}`}
-            onClick={() => setViewMode("gallery")}
-          >
-            Gallery
-          </button>
+          <button className={`btn ${viewMode === "grid" ? "btn-primary" : "btn-ghost"}`} onClick={() => setViewMode("grid")}>Grid</button>
+          <button className={`btn ${viewMode === "list" ? "btn-primary" : "btn-ghost"}`} onClick={() => setViewMode("list")}>List</button>
+          <button className={`btn ${viewMode === "gallery" ? "btn-primary" : "btn-ghost"}`} onClick={() => setViewMode("gallery")}>Gallery</button>
         </div>
       </div>
 
@@ -132,11 +98,11 @@ export default function ClassDetailPage() {
               gap: "0.5rem",
             }}
           >
-            {gridImages.map((img, idx) => (
+            {images.map((img, idx) => (
               <Link
                 key={img.imageRel}
                 to={`/image/${encodeURIComponent(img.split)}/${encodeURIComponent(img.name)}`}
-                state={{ list: accumulatedImages, index: page * PAGE_SIZE + idx, classId, classSort: sortBy || undefined }}
+                state={{ classId, classSort: sortBy || undefined, startIndex: (page - 1) * PAGE_SIZE + idx }}
                 className="card"
                 style={{
                   padding: viewMode === "list" ? "0.5rem 0.75rem" : 0,
@@ -176,34 +142,19 @@ export default function ClassDetailPage() {
             ))}
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
-            {totalPages > 1 && (
-              <>
-                <button
-                  className="btn btn-ghost"
-                  disabled={page === 0}
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                >
-                  Previous
-                </button>
-                <span style={{ fontSize: "0.9rem", color: "var(--color-text-muted)" }}>
-                  Page {page + 1} of {totalPages} · {accumulatedImages.length} loaded
-                </span>
-                <button
-                  className="btn btn-ghost"
-                  disabled={page >= totalPages - 1}
-                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                >
-                  Next
-                </button>
-              </>
-            )}
-            {hasMore && (
-              <button className="btn btn-primary" onClick={loadMore} disabled={loadingMore} style={{ marginLeft: "auto" }}>
-                {loadingMore ? "Loading…" : `Load more (${accumulatedImages.length} / ${total})`}
+          {totalPages > 1 && (
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", justifyContent: "center" }}>
+              <button className="btn btn-ghost" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
+                ← Previous
               </button>
-            )}
-          </div>
+              <span style={{ fontSize: "0.9rem", color: "var(--color-text-muted)", fontVariantNumeric: "tabular-nums" }}>
+                Page {page} of {totalPages}
+              </span>
+              <button className="btn btn-ghost" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>
+                Next →
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>

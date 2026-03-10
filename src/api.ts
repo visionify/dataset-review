@@ -69,7 +69,7 @@ export const api = {
   setConfig: (path: string) => post<{ ok: boolean }>("/config", { path }),
   getSummary: () => get<DatasetSummary>("/dataset/summary"),
   getValidation: () => get<{ checks: ValidationCheck[] }>("/validation"),
-  getImages: (opts: { split?: string; page?: number; limit?: number; reviewed?: "yes" | "no"; tagType?: string; tag?: string }) => {
+  getImages: (opts: { split?: string; page?: number; limit?: number; reviewed?: "yes" | "no"; tagType?: string; tag?: string; classId?: number; sort?: string }) => {
     const p = new URLSearchParams();
     if (opts.split) p.set("split", opts.split);
     if (opts.page != null) p.set("page", String(opts.page));
@@ -77,6 +77,8 @@ export const api = {
     if (opts.reviewed) p.set("reviewed", opts.reviewed);
     if (opts.tagType) p.set("tagType", opts.tagType);
     if (opts.tag) p.set("tag", opts.tag);
+    if (opts.classId != null) p.set("classId", String(opts.classId));
+    if (opts.sort) p.set("sort", opts.sort);
     return get<{ images: ImageItem[]; total: number }>(`/images?${p}`);
   },
   getAutoTags: () => get<{ tasks: TagGroup[]; months: TagGroup[]; cameras: TagGroup[] }>("/auto-tags"),

@@ -11,7 +11,7 @@ A **local web app** for reviewing, annotating, and cleaning YOLO-format object-d
 
 - **Dataset browser** — Open any YOLO dataset by path (paste or drag-drop). Supports standard and Roboflow-style layouts; auto-detects `data.yaml` and common directory patterns.
 - **Class dashboard** — See per-class counts, sample thumbnails, and overall review progress (total images, reviewed %, missing/empty labels).
-- **Image grids by split** — Browse **All Images**, **Training**, **Validation**, and **Test** with pagination, “reviewed” filter, and optional tag filters (e.g. by date, task, camera).
+- **Image grids by split** — Browse **All Images**, **Training**, **Validation**, and **Test** with pagination, “reviewed” filter, and optional tag filters (e.g. by date, task, camera). Filter further by **class** and sort by **bounding-box area** to quickly spot spurious or tiny annotations.
 - **Annotation editor** — Open any image to view and edit bounding boxes: draw, resize, change class, delete. Changes are written back to YOLO `.txt` label files.
 - **Review tracking** — Mark images as reviewed and move quickly with keyboard shortcuts (e.g. next/prev, mark reviewed, cycle class). Progress is stored in a `review/` folder inside your dataset.
 - **Validation suite** — Detect and fix common issues: missing labels, empty labels, duplicate labels, duplicate images (by hash), very small bboxes, and view class distribution.
@@ -77,6 +77,7 @@ Open **http://localhost:5173** in your browser.
 
 - Use the nav to open **All Images** or a specific split.
 - Optionally filter by **Reviewed** (e.g. “Not reviewed only”) or by **tags** (date, task, camera) when available.
+- Use the **class filter** dropdown to narrow results to images containing a specific class. Once a class is selected, the **sort-by-area** dropdown appears, letting you sort by bounding-box area (smallest or largest first) — useful for finding spurious tiny annotations.
 - Click an image to open the **annotation view** for that image.
 
 ![Image grid](docs/screenshots/images.png)  
@@ -208,7 +209,7 @@ For integration or scripting, the backend exposes:
 | GET    | `/api/config` | Current dataset path |
 | POST   | `/api/config` | Set dataset path |
 | GET    | `/api/dataset/summary` | Stats: classes, counts, reviewed |
-| GET    | `/api/images?split=&page=&limit=&reviewed=&tagType=&tag=` | Paginated image list |
+| GET    | `/api/images?split=&page=&limit=&reviewed=&tagType=&tag=&classId=&sort=` | Paginated image list (classId filters by class; sort=area_asc/area_desc sorts by bbox area) |
 | GET    | `/api/images/:split/:name` | Serve image file |
 | DELETE | `/api/images/:split/:name` | Delete image + label |
 | GET/PUT| `/api/annotations/:split/:base` | YOLO bbox annotations |

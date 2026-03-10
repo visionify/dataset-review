@@ -1,16 +1,20 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, imageBase } from "@/api";
-import type { ImageItem } from "@/types";
+import type { ClassItem, ImageItem } from "@/types";
 
 const PAGE_SIZE = 48;
+type SortMode = "" | "area_asc" | "area_desc";
 
 export default function ImagesPage() {
   const { split } = useParams<{ split: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const tagType = searchParams.get("tagType") || "";
   const tagValue = searchParams.get("tag") || "";
+  const filterClassId = searchParams.get("classId") || "";
+  const sortBy = (searchParams.get("sort") || "") as SortMode;
   const [summary, setSummary] = useState<Awaited<ReturnType<typeof api.getSummary>> | null>(null);
+  const [classes, setClasses] = useState<ClassItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -26,23 +30,41 @@ export default function ImagesPage() {
   const effectiveSplit = split === "all" || !split ? "all" : split;
   const selectMode = selected.size > 0;
 
+  const setFilterClassIdParam = (v: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (v) next.set("classId", v); else next.delete("classId");
+      next.delete("sort");
+      return next;
+    }, { replace: true });
+  };
+
+  const setSortByParam = (v: SortMode) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (v) next.set("sort", v); else next.delete("sort");
+      return next;
+    }, { replace: true });
+  };
+
   useEffect(() => {
-    api.getSummary().then(setSummary).catch(() => setSummary(null));
+    api.getSummary().then(s => { setSummary(s); setClasses(s.classes ?? []); }).catch(() => setSummary(null));
     api.getReviewed().then(r => setReviewedSet(new Set(r.reviewed))).catch(() => {});
   }, []);
+
+  const classIdNum = filterClassId ? parseInt(filterClassId, 10) : undefined;
 
   const loadPage = useCallback(() => {
     if (!summary?.configured) { setLoading(false); return; }
     setLoading(true);
-    api.getImages({ split: effectiveSplit, page: page + 1, limit: PAGE_SIZE, reviewed: filterReviewed === "no" ? "no" : undefined, tagType: tagType || undefined, tag: tagValue || undefined })
+    api.getImages({ split: effectiveSplit, page: page + 1, limit: PAGE_SIZE, reviewed: filterReviewed === "no" ? "no" : undefined, tagType: tagType || undefined, tag: tagValue || undefined, classId: classIdNum, sort: sortBy || undefined })
       .then(r => { setImages(r.images); setTotal(r.total); })
       .finally(() => setLoading(false));
-  }, [summary?.configured, effectiveSplit, page, filterReviewed, tagType, tagValue]);
+  }, [summary?.configured, effectiveSplit, page, filterReviewed, tagType, tagValue, classIdNum, sortBy]);
 
   useEffect(() => { loadPage(); }, [loadPage]);
 
-  // Clear selection and show-all when changing split/filter/tag
-  useEffect(() => { setSelected(new Set()); setShowAll(false); setAllImages([]); setPage(0); }, [effectiveSplit, filterReviewed, tagType, tagValue]);
+  useEffect(() => { setSelected(new Set()); setShowAll(false); setAllImages([]); setPage(0); }, [effectiveSplit, filterReviewed, tagType, tagValue, filterClassId, sortBy]);
   useEffect(() => { if (!showAll) setSelected(new Set()); }, [page]);
 
   const toggleSelect = (img: ImageItem) => {
@@ -71,7 +93,7 @@ export default function ImagesPage() {
       let pg = 1;
       let hasMore = true;
       while (hasMore) {
-        const r = await api.getImages({ split: effectiveSplit, page: pg, limit: 5000, reviewed: filterReviewed === "no" ? "no" : undefined, tagType: tagType || undefined, tag: tagValue || undefined });
+        const r = await api.getImages({ split: effectiveSplit, page: pg, limit: 5000, reviewed: filterReviewed === "no" ? "no" : undefined, tagType: tagType || undefined, tag: tagValue || undefined, classId: classIdNum, sort: sortBy || undefined });
         accumulated.push(...r.images);
         hasMore = r.images.length === 5000;
         pg++;
@@ -81,7 +103,7 @@ export default function ImagesPage() {
       setShowAll(true);
     } catch {}
     finally { setLoadingAll(false); }
-  }, [effectiveSplit, filterReviewed, tagType, tagValue]);
+  }, [effectiveSplit, filterReviewed, tagType, tagValue, classIdNum, sortBy]);
 
   const handleDeleteSelected = async () => {
     if (!selected.size) return;
@@ -146,6 +168,31 @@ export default function ImagesPage() {
             <input type="checkbox" checked={filterReviewed === "no"} onChange={e => { setFilterReviewed(e.target.checked ? "no" : "all"); setPage(0); }} />
             Not reviewed only
           </label>
+          {classes.length > 0 && (
+            <select
+              className="input"
+              style={{ width: "auto", padding: "0.3rem 0.4rem", fontSize: "0.85rem" }}
+              value={filterClassId}
+              onChange={e => setFilterClassIdParam(e.target.value)}
+            >
+              <option value="">All classes</option>
+              {classes.map(c => (
+                <option key={c.id} value={String(c.id)}>{c.name}</option>
+              ))}
+            </select>
+          )}
+          {filterClassId && (
+            <select
+              className="input"
+              style={{ width: "auto", padding: "0.3rem 0.4rem", fontSize: "0.85rem" }}
+              value={sortBy}
+              onChange={e => setSortByParam(e.target.value as SortMode)}
+            >
+              <option value="">Default order</option>
+              <option value="area_asc">BBox area (smallest first)</option>
+              <option value="area_desc">BBox area (largest first)</option>
+            </select>
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
           {showAll ? (
@@ -226,12 +273,21 @@ export default function ImagesPage() {
 
                 <Link
                   to={`/image/${encodeURIComponent(img.split)}/${encodeURIComponent(img.name)}`}
-                  state={{ fromSplit: effectiveSplit, filterReviewed: filterReviewed === "no" ? "no" : undefined, startIndex: globalIdx, tagType: tagType || undefined, tag: tagValue || undefined }}
+                  state={{ fromSplit: effectiveSplit, filterReviewed: filterReviewed === "no" ? "no" : undefined, startIndex: globalIdx, tagType: tagType || undefined, tag: tagValue || undefined, classId: filterClassId || undefined, classSort: sortBy || undefined }}
                   style={{ textDecoration: "none", color: "inherit" }}
                   onClick={(e) => { if (selectMode) e.preventDefault(); }}
                 >
-                  <div style={{ aspectRatio: "1", background: "var(--color-border)" }}>
+                  <div style={{ aspectRatio: "1", background: "var(--color-border)", position: "relative" }}>
                     <img src={api.imageUrl(img.split, img.name)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} loading="lazy" />
+                    {img.bboxArea != null && (
+                      <span style={{
+                        position: "absolute", bottom: 4, right: 4,
+                        background: img.bboxArea < 0.001 ? "rgba(239,68,68,0.85)" : img.bboxArea < 0.005 ? "rgba(234,179,8,0.85)" : "rgba(0,0,0,0.55)",
+                        color: "#fff", fontSize: "0.65rem", padding: "1px 4px", borderRadius: 3, fontVariantNumeric: "tabular-nums",
+                      }}>
+                        {(img.bboxArea * 100).toFixed(2)}%
+                      </span>
+                    )}
                   </div>
                   <div style={{ padding: "0.3rem 0.4rem", fontSize: "0.75rem", color: "var(--color-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{img.name}</div>
                 </Link>

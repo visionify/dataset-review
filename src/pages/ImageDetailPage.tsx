@@ -20,6 +20,7 @@ export default function ImageDetailPage() {
   const classSort = state?.classSort || "";
   const tagType = state?.tagType || "";
   const tagValue = state?.tag || "";
+  const cameFromImagesPage = state?.fromSplit != null;
 
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [classColors, setClassColors] = useState<Record<number, string>>({});
@@ -71,7 +72,8 @@ export default function ImageDetailPage() {
       const all: ImageItem[] = [];
       let page = 1;
       let hasMore = true;
-      if (filterClassId != null && !isNaN(filterClassId)) {
+      if (filterClassId != null && !isNaN(filterClassId) && !cameFromImagesPage) {
+        // ClassDetailPage flow — use dedicated class images endpoint
         while (hasMore) {
           const r = await api.getClassImages(filterClassId, page, LOAD_LIMIT, classSort || undefined);
           all.push(...r.images);
@@ -79,8 +81,14 @@ export default function ImageDetailPage() {
           page++;
         }
       } else {
+        // ImagesPage flow — use general images endpoint (with optional classId + sort)
         while (hasMore) {
-          const r = await api.getImages({ split: fromSplit, page, limit: LOAD_LIMIT, reviewed: filterReviewed, tagType: tagType || undefined, tag: tagValue || undefined });
+          const r = await api.getImages({
+            split: fromSplit, page, limit: LOAD_LIMIT, reviewed: filterReviewed,
+            tagType: tagType || undefined, tag: tagValue || undefined,
+            classId: (cameFromImagesPage && filterClassId != null) ? filterClassId : undefined,
+            sort: (cameFromImagesPage && filterClassId != null && classSort) ? classSort : undefined,
+          });
           all.push(...r.images);
           hasMore = r.images.length === LOAD_LIMIT;
           page++;
@@ -96,16 +104,22 @@ export default function ImageDetailPage() {
       setListReady(true);
     };
     loadAll().catch(() => setListReady(true));
-  }, [fromSplit, filterReviewed, filterClassId, classSort, tagType, tagValue]);
+  }, [fromSplit, filterReviewed, filterClassId, classSort, tagType, tagValue, cameFromImagesPage]);
 
   const currentImage = allImages[currentIdx] ?? (split && name ? { split, name, imageRel: "", relPath: "" } : null);
   const hasPrev = currentIdx > 0;
   const hasNext = currentIdx < allImages.length - 1;
-  const backLink = filterClassId != null
-    ? `/class/${filterClassId}${classSort ? `?sort=${classSort}` : ""}`
-    : tagType && tagValue
-      ? `/images/${fromSplit}?tagType=${encodeURIComponent(tagType)}&tag=${encodeURIComponent(tagValue)}`
-      : `/images/${fromSplit}`;
+  const backLink = (() => {
+    if (filterClassId != null && !cameFromImagesPage) {
+      return `/class/${filterClassId}${classSort ? `?sort=${classSort}` : ""}`;
+    }
+    const params = new URLSearchParams();
+    if (tagType && tagValue) { params.set("tagType", tagType); params.set("tag", tagValue); }
+    if (cameFromImagesPage && filterClassId != null) params.set("classId", String(filterClassId));
+    if (cameFromImagesPage && classSort) params.set("sort", classSort);
+    const qs = params.toString();
+    return `/images/${fromSplit}${qs ? `?${qs}` : ""}`;
+  })();
 
   // Load annotations + tags + reviewed status when image changes
   useEffect(() => {

@@ -408,16 +408,23 @@ app.get("/api/images", async (req, res) => {
     const limit = Math.min(10000, Math.max(1, parseInt(req.query.limit, 10) || 48));
     const tagType = req.query.tagType || "";
     const tagValue = req.query.tag || "";
+    const classIdParam = req.query.classId;
+    const classId = classIdParam != null ? parseInt(classIdParam, 10) : null;
+    const sort = req.query.sort || "";
+
+    let pool = null;
 
     if (tagType && tagValue) {
       const idx = await buildTagIndex(datasetRoot, config);
-      let pool = [];
       if (tagType === "task") pool = idx.tasks[tagValue] || [];
       else if (tagType === "month") pool = idx.months[tagValue] || [];
       else if (tagType === "camera") pool = idx.cameras[tagValue] || [];
+      else pool = [];
+    }
 
+    if (pool !== null) {
       let filtered = pool;
-      if (split && split !== "all") filtered = pool.filter(img => img.split === split);
+      if (split && split !== "all") filtered = filtered.filter(img => img.split === split);
       if (req.query.reviewed === "no" || req.query.reviewed === "yes") {
         const reviewed = await readReviewedSet(datasetRoot);
         filtered = filtered.filter(img => {
@@ -425,11 +432,109 @@ app.get("/api/images", async (req, res) => {
           return req.query.reviewed === "no" ? !reviewed.has(key) : reviewed.has(key);
         });
       }
+
+      if (classId != null && !isNaN(classId)) {
+        const classIdx = await buildClassIndex(datasetRoot, config);
+        filtered = filtered.filter(img => {
+          const rel = img.imageRel || img.relPath;
+          return rel && classIdx[rel] && classIdx[rel].includes(classId);
+        });
+      }
+
+      // Clone so we never mutate cached tagIndex objects
+      filtered = filtered.map(img => ({ ...img }));
+
+      if (classId != null && !isNaN(classId) && (sort === "area_asc" || sort === "area_desc")) {
+        for (const item of filtered) {
+          const imgSplit = item.split;
+          const labelsDir = config.labelsDir?.[imgSplit];
+          let minArea = null;
+          if (labelsDir) {
+            const base = path.basename(item.name, path.extname(item.name));
+            try {
+              const content = await fs.readFile(path.join(datasetRoot, labelsDir, base + ".txt"), "utf8");
+              for (const line of content.split("\n")) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length < 5) continue;
+                if (parseInt(parts[0], 10) !== classId) continue;
+                const bw = parseFloat(parts[3]);
+                const bh = parseFloat(parts[4]);
+                const area = bw * bh;
+                if (minArea === null || area < minArea) minArea = area;
+              }
+            } catch {}
+          }
+          item.bboxArea = minArea ?? 0;
+        }
+        if (sort === "area_asc") filtered.sort((a, b) => a.bboxArea - b.bboxArea);
+        else filtered.sort((a, b) => b.bboxArea - a.bboxArea);
+      }
+
       const start = (page - 1) * limit;
       res.json({ images: filtered.slice(start, start + limit), total: filtered.length });
     } else {
-      const { images, total } = await getImagesPaginated(datasetRoot, config, split, page, limit, req.query.reviewed);
-      res.json({ images, total });
+      let result = await getImagesPaginated(datasetRoot, config, split, page, limit, req.query.reviewed);
+
+      if (classId != null && !isNaN(classId)) {
+        const classIdx = await buildClassIndex(datasetRoot, config);
+        const allSplits = split && split !== "all" ? [split].filter(s => config[s]) : activeSplits(config);
+        let allFiltered = [];
+        for (const s of allSplits) {
+          try {
+            const files = await listImagesInDir(path.join(datasetRoot, config[s]));
+            for (const f of files) {
+              const imageRel = path.join(config[s], f).replace(/\\/g, "/");
+              if (classIdx[imageRel] && classIdx[imageRel].includes(classId)) {
+                const base = path.basename(f, path.extname(f));
+                allFiltered.push({ split: s, name: f, base, key: `${s}/${base}`, imageRel, relPath: imageRel });
+              }
+            }
+          } catch {}
+        }
+
+        if (req.query.reviewed === "no" || req.query.reviewed === "yes") {
+          const reviewed = await readReviewedSet(datasetRoot);
+          allFiltered = req.query.reviewed === "no"
+            ? allFiltered.filter(i => !reviewed.has(i.key))
+            : allFiltered.filter(i => reviewed.has(i.key));
+        }
+
+        if (sort === "area_asc" || sort === "area_desc") {
+          for (const item of allFiltered) {
+            const labelsDir = config.labelsDir?.[item.split];
+            let minArea = null;
+            if (labelsDir) {
+              try {
+                const content = await fs.readFile(path.join(datasetRoot, labelsDir, item.base + ".txt"), "utf8");
+                for (const line of content.split("\n")) {
+                  const parts = line.trim().split(/\s+/);
+                  if (parts.length < 5) continue;
+                  if (parseInt(parts[0], 10) !== classId) continue;
+                  const bw = parseFloat(parts[3]);
+                  const bh = parseFloat(parts[4]);
+                  const area = bw * bh;
+                  if (minArea === null || area < minArea) minArea = area;
+                }
+              } catch {}
+            }
+            item.bboxArea = minArea ?? 0;
+          }
+          if (sort === "area_asc") allFiltered.sort((a, b) => a.bboxArea - b.bboxArea);
+          else allFiltered.sort((a, b) => b.bboxArea - a.bboxArea);
+        }
+
+        const start = (page - 1) * limit;
+        result = {
+          images: allFiltered.slice(start, start + limit).map(({ split: s, name, imageRel, relPath, bboxArea }) => {
+            const item = { split: s, name, imageRel, relPath };
+            if (bboxArea != null) item.bboxArea = bboxArea;
+            return item;
+          }),
+          total: allFiltered.length,
+        };
+      }
+
+      res.json(result);
     }
   } catch (e) {
     res.status(500).json({ images: [], total: 0 });
