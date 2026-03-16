@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useParams, useLocation, useNavigate } from "react-router-dom";
-import { api, imageBase } from "@/api";
+import { api, imageBase, imageSrc } from "@/api";
 import type { PredictionBox } from "@/api";
 import { BBoxCanvas } from "@/components/BBoxCanvas";
 import type { BBox, ImageItem, ClassItem } from "@/types";
@@ -41,9 +41,14 @@ export default function ImageDetailPage() {
   const [detecting, setDetecting] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [confidence, setConfidence] = useState(0.25);
+  const [moveTarget, setMoveTarget] = useState("");
+  const [moving, setMoving] = useState(false);
   const boxesRef = useRef(boxes);
   boxesRef.current = boxes;
   const loadedImageRef = useRef<{ split: string; name: string } | null>(null);
+
+  const datasetType = summary?.type ?? "detection";
+  const isCls = datasetType === "classification";
 
   const setDefaultClassId = useCallback((id: number) => {
     setDefaultClassIdState(id);
@@ -121,6 +126,15 @@ export default function ImageDetailPage() {
     return `/images/${fromSplit}${qs ? `?${qs}` : ""}`;
   })();
 
+  const reviewKey = (img: { name: string; imageRel: string }) => {
+    if (isCls) {
+      const rel = img.imageRel;
+      const dot = rel.lastIndexOf(".");
+      return dot > 0 ? rel.slice(0, dot) : rel;
+    }
+    return undefined; // use default server behavior
+  };
+
   // Load annotations + tags + reviewed status when image changes
   useEffect(() => {
     if (!currentImage) return;
@@ -137,15 +151,21 @@ export default function ImageDetailPage() {
 
     let stale = false;
 
-    Promise.all([api.getAnnotations(s, b), api.getTags(s, b), api.getReviewed()]).then(([ann, t, rev]) => {
+    const promises: [Promise<BBox[]>, Promise<Record<string, unknown>>, Promise<{ reviewed: string[] }>] = [
+      isCls ? Promise.resolve([]) : api.getAnnotations(s, b),
+      api.getTags(s, b),
+      api.getReviewed(),
+    ];
+
+    Promise.all(promises).then(([ann, t, rev]) => {
       if (stale) return;
       setBoxes(ann);
       loadedImageRef.current = { split: s, name: n };
       const tagObj = (t && typeof t === "object" && !Array.isArray(t)) ? t as Record<string, unknown> : {};
       setTagList(Object.entries(tagObj).map(([k, v]) => [k, String(v ?? "")]));
-      const key = `${s}/${b}`;
-      setIsReviewed(rev.reviewed.includes(key));
-      if (filterClassId != null && classSort.startsWith("area") && ann.length > 0) {
+      const rk = reviewKey(currentImage) ?? `${s}/${b}`;
+      setIsReviewed(rev.reviewed.includes(rk));
+      if (!isCls && filterClassId != null && classSort.startsWith("area") && ann.length > 0) {
         let smallestIdx = -1;
         let smallestArea = Infinity;
         ann.forEach((box: BBox, i: number) => {
@@ -167,12 +187,13 @@ export default function ImageDetailPage() {
 
   const markReviewed = useCallback(() => {
     if (!currentImage) return;
-    api.setReviewed(currentImage.split, imageBase(currentImage.name), true).catch(() => {});
+    const rk = reviewKey(currentImage);
+    api.setReviewed(currentImage.split, imageBase(currentImage.name), true, rk).catch(() => {});
     setIsReviewed(true);
-  }, [currentImage]);
+  }, [currentImage, isCls]);
 
   const saveAnnotations = useCallback(async () => {
-    if (!currentImage) return;
+    if (!currentImage || isCls) return;
     setSaving(true); setMessage(null);
     try {
       await api.saveAnnotations(currentImage.split, imageBase(currentImage.name), boxesRef.current);
@@ -181,7 +202,7 @@ export default function ImageDetailPage() {
       setTimeout(() => setMessage(null), 2000);
     } catch (e) { setMessage(e instanceof Error ? e.message : "Save failed"); }
     finally { setSaving(false); }
-  }, [currentImage, markReviewed]);
+  }, [currentImage, markReviewed, isCls]);
 
   const saveTags = useCallback(async () => {
     if (!currentImage) return;
@@ -193,6 +214,7 @@ export default function ImageDetailPage() {
   }, [currentImage, tagList]);
 
   const autoSaveAndMark = useCallback(() => {
+    if (isCls) return; // no auto-save for classification
     const loaded = loadedImageRef.current;
     if (!loaded) return;
     const s = loaded.split;
@@ -200,7 +222,7 @@ export default function ImageDetailPage() {
     api.saveAnnotations(s, b, boxesRef.current).catch(() => {});
     api.setReviewed(s, b, true).catch(() => {});
     loadedImageRef.current = null;
-  }, []);
+  }, [isCls]);
 
   const goNext = useCallback(() => {
     if (!hasNext) return;
@@ -224,18 +246,38 @@ export default function ImageDetailPage() {
     if (!currentImage) return;
     setDeleting(true);
     try {
-      await api.deleteImage(currentImage.split, currentImage.name);
+      if (isCls) {
+        await api.classificationDeleteImages([currentImage.imageRel]);
+      } else {
+        await api.deleteImage(currentImage.split, currentImage.name);
+      }
       const newList = allImages.filter((_, i) => i !== currentIdx);
       setAllImages(newList);
       if (newList.length === 0) { navigate(backLink, { replace: true }); return; }
       setCurrentIdx(Math.min(currentIdx, newList.length - 1));
     } catch (e) { setMessage(e instanceof Error ? e.message : "Delete failed"); }
     finally { setDeleting(false); }
-  }, [currentImage, allImages, currentIdx, backLink, navigate]);
+  }, [currentImage, allImages, currentIdx, backLink, navigate, isCls]);
+
+  const handleMoveImage = useCallback(async () => {
+    if (!currentImage || !moveTarget) return;
+    setMoving(true);
+    try {
+      await api.classificationMoveImages([currentImage.imageRel], moveTarget);
+      setMoveTarget("");
+      const newList = allImages.filter((_, i) => i !== currentIdx);
+      setAllImages(newList);
+      if (newList.length === 0) { navigate(backLink, { replace: true }); return; }
+      setCurrentIdx(Math.min(currentIdx, newList.length - 1));
+      setMessage(`Moved to "${moveTarget}".`);
+      setTimeout(() => setMessage(null), 2000);
+    } catch (e) { setMessage(e instanceof Error ? e.message : "Move failed"); }
+    finally { setMoving(false); }
+  }, [currentImage, moveTarget, allImages, currentIdx, backLink, navigate]);
 
   // Cycle class on selected box
   const cycleBoxClass = useCallback(() => {
-    if (selectedIndex === null || !boxes[selectedIndex]) return;
+    if (isCls || selectedIndex === null || !boxes[selectedIndex]) return;
     const maxClass = classes.length;
     if (!maxClass) return;
     setBoxes(prev => prev.map((b, i) => {
@@ -244,7 +286,7 @@ export default function ImageDetailPage() {
       setDefaultClassId(next);
       return { ...b, classId: next };
     }));
-  }, [selectedIndex, boxes, classes.length, setDefaultClassId]);
+  }, [selectedIndex, boxes, classes.length, setDefaultClassId, isCls]);
 
   // When a new box is created or a box class changes, update defaultClassId
   const handleBoxesChange = useCallback((newBoxes: BBox[]) => {
@@ -263,7 +305,7 @@ export default function ImageDetailPage() {
   }, [selectedIndex, setDefaultClassId]);
 
   const handleAutoDetect = useCallback(async () => {
-    if (!currentImage) return;
+    if (!currentImage || isCls) return;
     setDetecting(true);
     try {
       const r = await api.inferencePredict(currentImage.split, currentImage.name, confidence);
@@ -271,7 +313,7 @@ export default function ImageDetailPage() {
       if (!r.boxes.length) { setMessage("No detections."); setTimeout(() => setMessage(null), 2000); }
     } catch (e) { setMessage(e instanceof Error ? e.message : "Detection failed"); setTimeout(() => setMessage(null), 3000); }
     finally { setDetecting(false); }
-  }, [currentImage, confidence]);
+  }, [currentImage, confidence, isCls]);
 
   const acceptPrediction = useCallback((index: number) => {
     const pred = predictions[index];
@@ -291,7 +333,7 @@ export default function ImageDetailPage() {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
-      if (e.key === "d" && !e.ctrlKey && !e.metaKey && selectedIndex !== null) {
+      if (!isCls && e.key === "d" && !e.ctrlKey && !e.metaKey && selectedIndex !== null) {
         e.preventDefault();
         setBoxes(prev => prev.filter((_, i) => i !== selectedIndex));
         setSelectedIndex(null);
@@ -299,7 +341,7 @@ export default function ImageDetailPage() {
       }
       if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
-        if (selectedIndex !== null) {
+        if (!isCls && selectedIndex !== null) {
           setBoxes(prev => prev.filter((_, i) => i !== selectedIndex));
           setSelectedIndex(null);
         } else {
@@ -307,27 +349,29 @@ export default function ImageDetailPage() {
         }
         return;
       }
-      if (e.ctrlKey && e.key === "s") { e.preventDefault(); saveAnnotations(); return; }
+      if (!isCls && e.ctrlKey && e.key === "s") { e.preventDefault(); saveAnnotations(); return; }
       if (e.key === "t" && !e.ctrlKey && !e.metaKey && !e.altKey) { setShowTags(s => !s); return; }
-      if (e.key === "c" && !e.ctrlKey && !e.metaKey && selectedIndex !== null) { e.preventDefault(); cycleBoxClass(); return; }
+      if (!isCls && e.key === "c" && !e.ctrlKey && !e.metaKey && selectedIndex !== null) { e.preventDefault(); cycleBoxClass(); return; }
       if (e.key === " ") { e.preventDefault(); handleThumbsUp(); return; }
-      if (e.key === "a" && !e.ctrlKey && !e.metaKey && selectedIndex === null) { e.preventDefault(); if (predictions.length) acceptAllPredictions(); else handleAutoDetect(); return; }
+      if (!isCls && e.key === "a" && !e.ctrlKey && !e.metaKey && selectedIndex === null) { e.preventDefault(); if (predictions.length) acceptAllPredictions(); else handleAutoDetect(); return; }
 
-      const num = parseInt(e.key, 10);
-      if (e.key >= "1" && e.key <= "9" && num >= 1 && num <= 9 && selectedIndex !== null && classes.length >= num) {
-        e.preventDefault();
-        handleSelectedClassChange(num - 1);
-      }
-      if (e.key === "0" && selectedIndex !== null && classes.length > 0) {
-        e.preventDefault();
-        handleSelectedClassChange(0);
+      if (!isCls) {
+        const num = parseInt(e.key, 10);
+        if (e.key >= "1" && e.key <= "9" && num >= 1 && num <= 9 && selectedIndex !== null && classes.length >= num) {
+          e.preventDefault();
+          handleSelectedClassChange(num - 1);
+        }
+        if (e.key === "0" && selectedIndex !== null && classes.length > 0) {
+          e.preventDefault();
+          handleSelectedClassChange(0);
+        }
       }
       if (e.key === "ArrowLeft") { e.preventDefault(); goPrev(); }
       if (e.key === "ArrowRight") { e.preventDefault(); goNext(); }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedIndex, saveAnnotations, classes.length, goPrev, goNext, handleDeleteImage, handleThumbsUp, cycleBoxClass, handleSelectedClassChange, predictions.length, acceptAllPredictions, handleAutoDetect]);
+  }, [isCls, selectedIndex, saveAnnotations, classes.length, goPrev, goNext, handleDeleteImage, handleThumbsUp, cycleBoxClass, handleSelectedClassChange, predictions.length, acceptAllPredictions, handleAutoDetect]);
 
   const addTag = () => setTagList(prev => [...prev, ["", ""]]);
   const updateTag = (i: number, k: 0 | 1, v: string) =>
@@ -362,52 +406,91 @@ export default function ImageDetailPage() {
 
         <span style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>{pctReviewed}%</span>
         <label style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.8rem", color: isReviewed ? "var(--color-success)" : "var(--color-text-muted)", cursor: "pointer" }} title="Mark as reviewed">
-          <input type="checkbox" checked={isReviewed} onChange={e => { const v = e.target.checked; setIsReviewed(v); if (currentImage) api.setReviewed(currentImage.split, imageBase(currentImage.name), v).catch(() => {}); }} />
+          <input type="checkbox" checked={isReviewed} onChange={e => {
+            const v = e.target.checked;
+            setIsReviewed(v);
+            if (currentImage) {
+              const rk = reviewKey(currentImage);
+              api.setReviewed(currentImage.split, imageBase(currentImage.name), v, rk).catch(() => {});
+            }
+          }} />
           Reviewed
         </label>
 
-        <select className="input" style={{ width: "auto", padding: "0.3rem 0.4rem", maxWidth: "120px" }} value={defaultClassId} onChange={e => setDefaultClassId(parseInt(e.target.value, 10))} title="Class for new boxes">
-          {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+        {isCls && currentImage.className && (
+          <span style={{ fontSize: "0.8rem", padding: "2px 8px", borderRadius: 4, background: "rgba(99,102,241,0.12)", color: "var(--color-text)", fontWeight: 600 }}>
+            {currentImage.className}
+          </span>
+        )}
 
-        <button className="btn btn-primary" onClick={saveAnnotations} disabled={saving} style={{ padding: "0.3rem 0.6rem" }}>
-          {saving ? "…" : "Save (Ctrl+S)"}
-        </button>
+        {!isCls && (
+          <select className="input" style={{ width: "auto", padding: "0.3rem 0.4rem", maxWidth: "120px" }} value={defaultClassId} onChange={e => setDefaultClassId(parseInt(e.target.value, 10))} title="Class for new boxes">
+            {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        )}
+
+        {!isCls && (
+          <button className="btn btn-primary" onClick={saveAnnotations} disabled={saving} style={{ padding: "0.3rem 0.6rem" }}>
+            {saving ? "…" : "Save (Ctrl+S)"}
+          </button>
+        )}
         <button className="btn btn-ghost" onClick={handleThumbsUp} style={{ padding: "0.3rem 0.5rem", fontSize: "1.1rem" }} title="Mark reviewed & next (Space)">
           👍
         </button>
-        <button className="btn btn-ghost" style={{ padding: "0.3rem 0.5rem", color: "var(--color-danger)" }} onClick={handleDeleteImage} disabled={deleting} title="Delete image (Del when no box selected)">
+        <button className="btn btn-ghost" style={{ padding: "0.3rem 0.5rem", color: "var(--color-danger)" }} onClick={handleDeleteImage} disabled={deleting} title="Delete image (Del)">
           {deleting ? "…" : "🗑"}
         </button>
         <button className="btn btn-ghost" onClick={() => setShowTags(s => !s)} style={{ padding: "0.3rem 0.5rem" }}>
           Tags {showTags ? "▼" : "▶"}
         </button>
 
-        <span style={{ borderLeft: "1px solid var(--color-border)", height: "1.2rem" }} />
-
-        {modelReady ? (
+        {isCls && classes.length > 1 && (
           <>
-            <button className="btn btn-ghost" onClick={handleAutoDetect} disabled={detecting} style={{ padding: "0.3rem 0.5rem" }} title="Run model (A)">
-              {detecting ? "Detecting…" : "Auto-detect (A)"}
-            </button>
-            {predictions.length > 0 && (
-              <>
-                <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>{predictions.length} pred</span>
-                <button className="btn btn-primary" onClick={acceptAllPredictions} style={{ padding: "0.3rem 0.5rem" }} title="Accept all predictions (A)">Accept all</button>
-                <button className="btn btn-ghost" onClick={() => setPredictions([])} style={{ padding: "0.3rem 0.5rem" }}>Clear</button>
-              </>
+            <span style={{ borderLeft: "1px solid var(--color-border)", height: "1.2rem" }} />
+            <select className="input" style={{ width: "auto", padding: "0.25rem 0.4rem", fontSize: "0.85rem" }} value={moveTarget} onChange={e => setMoveTarget(e.target.value)}>
+              <option value="">Move to…</option>
+              {classes.filter(c => c.name !== currentImage.className).map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+            </select>
+            {moveTarget && (
+              <button className="btn btn-primary" style={{ padding: "0.3rem 0.6rem" }} onClick={handleMoveImage} disabled={moving}>
+                {moving ? "Moving…" : "Move"}
+              </button>
             )}
-            <input type="range" min={0.05} max={0.95} step={0.05} value={confidence} onChange={e => setConfidence(parseFloat(e.target.value))} style={{ width: 60 }} title={`Confidence: ${Math.round(confidence * 100)}%`} />
-            <span style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", minWidth: "2rem" }}>{Math.round(confidence * 100)}%</span>
           </>
-        ) : (
-          <Link to="/settings" className="btn btn-ghost" style={{ padding: "0.3rem 0.5rem", fontSize: "0.8rem" }}>Load model</Link>
+        )}
+
+        {!isCls && (
+          <>
+            <span style={{ borderLeft: "1px solid var(--color-border)", height: "1.2rem" }} />
+
+            {modelReady ? (
+              <>
+                <button className="btn btn-ghost" onClick={handleAutoDetect} disabled={detecting} style={{ padding: "0.3rem 0.5rem" }} title="Run model (A)">
+                  {detecting ? "Detecting…" : "Auto-detect (A)"}
+                </button>
+                {predictions.length > 0 && (
+                  <>
+                    <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>{predictions.length} pred</span>
+                    <button className="btn btn-primary" onClick={acceptAllPredictions} style={{ padding: "0.3rem 0.5rem" }} title="Accept all predictions (A)">Accept all</button>
+                    <button className="btn btn-ghost" onClick={() => setPredictions([])} style={{ padding: "0.3rem 0.5rem" }}>Clear</button>
+                  </>
+                )}
+                <input type="range" min={0.05} max={0.95} step={0.05} value={confidence} onChange={e => setConfidence(parseFloat(e.target.value))} style={{ width: 60 }} title={`Confidence: ${Math.round(confidence * 100)}%`} />
+                <span style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", minWidth: "2rem" }}>{Math.round(confidence * 100)}%</span>
+              </>
+            ) : (
+              <Link to="/settings" className="btn btn-ghost" style={{ padding: "0.3rem 0.5rem", fontSize: "0.8rem" }}>Load model</Link>
+            )}
+          </>
         )}
 
         {message && <span style={{ color: "var(--color-success)", fontSize: "0.8rem" }}>{message}</span>}
 
         <span style={{ marginLeft: "auto", color: "var(--color-text-muted)", whiteSpace: "nowrap", fontSize: "0.75rem" }}>
-          A auto-detect/accept · ← → nav · Space approve · D del box · C cycle class
+          {isCls
+            ? "← → nav · Space approve · Del delete · T tags"
+            : "A auto-detect/accept · ← → nav · Space approve · D del box · C cycle class"
+          }
         </span>
       </div>
 
@@ -425,57 +508,85 @@ export default function ImageDetailPage() {
         </div>
       )}
 
-      {/* Canvas */}
+      {/* Image area */}
       <div style={{ flex: 1, minHeight: 0, display: "flex", justifyContent: "center", alignItems: "center", padding: "0.25rem", overflow: "hidden", background: "var(--color-border)" }}>
-        <BBoxCanvas
-          imageUrl={api.imageUrl(currentImage.split, currentImage.name)}
-          boxes={boxes}
-          predictions={predictions}
-          classNames={classNames}
-          selectedIndex={selectedIndex}
-          defaultClassId={defaultClassId}
-          focusedClassId={state?.classId != null ? parseInt(state.classId, 10) : null}
-          classColors={classColors}
-          onSelect={setSelectedIndex}
-          onBoxesChange={handleBoxesChange}
-          onDoubleClickBox={cycleBoxClass}
-          onAcceptPrediction={acceptPrediction}
-          fill
-        />
+        {isCls ? (
+          <img
+            src={imageSrc(currentImage, datasetType)}
+            alt={currentImage.name}
+            style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
+          />
+        ) : (
+          <BBoxCanvas
+            imageUrl={api.imageUrl(currentImage.split, currentImage.name)}
+            boxes={boxes}
+            predictions={predictions}
+            classNames={classNames}
+            selectedIndex={selectedIndex}
+            defaultClassId={defaultClassId}
+            focusedClassId={state?.classId != null ? parseInt(state.classId, 10) : null}
+            classColors={classColors}
+            onSelect={setSelectedIndex}
+            onBoxesChange={handleBoxesChange}
+            onDoubleClickBox={cycleBoxClass}
+            onAcceptPrediction={acceptPrediction}
+            fill
+          />
+        )}
       </div>
 
       {/* Bottom status */}
       <div style={{ minHeight: "36px", borderTop: "1px solid var(--color-border)", display: "flex", alignItems: "center", padding: "0.25rem 0.75rem", gap: "0.5rem", flexWrap: "wrap", background: "var(--color-surface)", fontSize: "0.85rem" }}>
-        {selectedIndex !== null && boxes[selectedIndex] != null ? (() => {
-          const selBox = boxes[selectedIndex]!;
-          const area = selBox.w * selBox.h;
-          return (
-            <>
-              <span>Class:</span>
-              <select className="input" style={{ width: "auto", padding: "0.2rem 0.4rem" }} value={selBox.classId} onChange={e => handleSelectedClassChange(parseInt(e.target.value, 10))}>
-                {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-              <span style={{
-                fontSize: "0.8rem", padding: "1px 6px", borderRadius: 3,
-                background: area < 0.001 ? "rgba(239,68,68,0.15)" : area < 0.005 ? "rgba(234,179,8,0.15)" : "rgba(0,0,0,0.06)",
-                color: area < 0.001 ? "var(--color-danger)" : area < 0.005 ? "#b45309" : "var(--color-text-muted)",
-                fontVariantNumeric: "tabular-nums",
-              }}>
-                area: {(area * 100).toFixed(3)}%
+        {isCls ? (
+          <>
+            <span style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>{currentImage.name}</span>
+            {currentImage.fileSize != null && (
+              <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>{formatFileSize(currentImage.fileSize)}</span>
+            )}
+            <span style={{ marginLeft: "auto", color: "var(--color-text-muted)", fontSize: "0.75rem" }}>
+              ← → navigate · Space approve & next · Del delete
+            </span>
+          </>
+        ) : (
+          <>
+            {selectedIndex !== null && boxes[selectedIndex] != null ? (() => {
+              const selBox = boxes[selectedIndex]!;
+              const area = selBox.w * selBox.h;
+              return (
+                <>
+                  <span>Class:</span>
+                  <select className="input" style={{ width: "auto", padding: "0.2rem 0.4rem" }} value={selBox.classId} onChange={e => handleSelectedClassChange(parseInt(e.target.value, 10))}>
+                    {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <span style={{
+                    fontSize: "0.8rem", padding: "1px 6px", borderRadius: 3,
+                    background: area < 0.001 ? "rgba(239,68,68,0.15)" : area < 0.005 ? "rgba(234,179,8,0.15)" : "rgba(0,0,0,0.06)",
+                    color: area < 0.001 ? "var(--color-danger)" : area < 0.005 ? "#b45309" : "var(--color-text-muted)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}>
+                    area: {(area * 100).toFixed(3)}%
+                  </span>
+                  <button type="button" className="btn btn-ghost" style={{ padding: "0.2rem 0.4rem" }} onClick={() => { setBoxes(prev => prev.filter((_, i) => i !== selectedIndex)); setSelectedIndex(null); }}>Delete box</button>
+                  <span style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>C to cycle class</span>
+                </>
+              );
+            })() : (
+              <span style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>Drag to draw · Click box to select/resize · D delete box · Space = approve & next</span>
+            )}
+            {classSort && (
+              <span style={{ marginLeft: "auto", fontSize: "0.75rem", color: "var(--color-text-muted)", background: "rgba(0,0,0,0.06)", padding: "1px 6px", borderRadius: 3 }}>
+                sorted by {classSort === "area_asc" ? "smallest area" : classSort === "area_desc" ? "largest area" : classSort === "size_asc" ? "smallest file" : "largest file"}
               </span>
-              <button type="button" className="btn btn-ghost" style={{ padding: "0.2rem 0.4rem" }} onClick={() => { setBoxes(prev => prev.filter((_, i) => i !== selectedIndex)); setSelectedIndex(null); }}>Delete box</button>
-              <span style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>C to cycle class</span>
-            </>
-          );
-        })() : (
-          <span style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>Drag to draw · Click box to select/resize · D delete box · Space = approve & next</span>
-        )}
-        {classSort && (
-          <span style={{ marginLeft: "auto", fontSize: "0.75rem", color: "var(--color-text-muted)", background: "rgba(0,0,0,0.06)", padding: "1px 6px", borderRadius: 3 }}>
-            sorted by {classSort === "area_asc" ? "smallest area" : "largest area"}
-          </span>
+            )}
+          </>
         )}
       </div>
     </div>
   );
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

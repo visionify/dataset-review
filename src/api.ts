@@ -55,11 +55,13 @@ export interface PredictionBox {
 
 export interface DatasetSummary {
   configured: boolean;
+  type?: "detection" | "classification";
   classes: ClassItem[];
-  config: { train: string | null; val: string | null; test: string | null; names: Record<number, string> } | null;
+  config: { train: string | null; val: string | null; test: string | null; names: Record<number, string>; classFolders?: string[] } | null;
   totalImages: number;
   reviewedCount?: number;
   splitCounts?: Record<string, number>;
+  classCounts?: Record<string, number>;
   missingLabelsCount?: number;
   emptyLabelsCount?: number;
 }
@@ -69,7 +71,7 @@ export const api = {
   setConfig: (path: string) => post<{ ok: boolean }>("/config", { path }),
   getSummary: () => get<DatasetSummary>("/dataset/summary"),
   getValidation: () => get<{ checks: ValidationCheck[] }>("/validation"),
-  getImages: (opts: { split?: string; page?: number; limit?: number; reviewed?: "yes" | "no"; tagType?: string; tag?: string; classId?: number; sort?: string }) => {
+  getImages: (opts: { split?: string; page?: number; limit?: number; reviewed?: "yes" | "no"; tagType?: string; tag?: string; classId?: number; sort?: string; className?: string }) => {
     const p = new URLSearchParams();
     if (opts.split) p.set("split", opts.split);
     if (opts.page != null) p.set("page", String(opts.page));
@@ -79,12 +81,13 @@ export const api = {
     if (opts.tag) p.set("tag", opts.tag);
     if (opts.classId != null) p.set("classId", String(opts.classId));
     if (opts.sort) p.set("sort", opts.sort);
+    if (opts.className) p.set("className", opts.className);
     return get<{ images: ImageItem[]; total: number }>(`/images?${p}`);
   },
   getAutoTags: () => get<{ tasks: TagGroup[]; months: TagGroup[]; cameras: TagGroup[] }>("/auto-tags"),
   getReviewed: () => get<{ reviewed: string[] }>("/reviewed"),
-  setReviewed: (split: string, base: string, reviewed: boolean) =>
-    patch<{ reviewed: string[] }>("/reviewed", { split, base, reviewed }),
+  setReviewed: (split: string, base: string, reviewed: boolean, reviewKey?: string) =>
+    patch<{ reviewed: string[] }>("/reviewed", { split, base, reviewed, ...(reviewKey ? { reviewKey } : {}) }),
   getClassColors: () => get<Record<number, string>>("/class-colors"),
   setClassColors: (colors: Record<number, string>) => put<Record<number, string>>("/class-colors", colors),
   deleteImage: (split: string, name: string) => {
@@ -116,6 +119,12 @@ export const api = {
   deleteDuplicateImages: () => post<{ ok: boolean; deleted: number }>("/validation/delete-duplicate-images", {}),
   deleteSmallBboxes: () => post<{ ok: boolean; removed: number; filesUpdated: number }>("/validation/delete-small-bboxes", {}),
 
+  // Classification-specific
+  classificationDeleteImages: (imageRels: string[]) =>
+    post<{ ok: boolean; deleted: number }>("/classification/delete-images", { imageRels }),
+  classificationMoveImages: (imageRels: string[], targetClassName: string) =>
+    post<{ ok: boolean; moved: number }>("/classification/move", { imageRels, targetClassName }),
+
   // Inference
   inferenceHealth: () => get<{ status: string; model_loaded: boolean; model_path: string | null }>("/inference/health"),
   inferenceLoad: (modelPath: string) => post<{ ok: boolean; model_path: string; classes: Record<number, string> }>("/inference/load", { model_path: modelPath }),
@@ -123,6 +132,12 @@ export const api = {
     post<{ boxes: PredictionBox[]; count: number }>("/inference/predict", { split, name, confidence, iou }),
   inferenceUnload: () => post<{ ok: boolean }>("/inference/unload", {}),
 };
+
+/** Get image src URL — works for both detection and classification */
+export function imageSrc(img: { split: string; name: string; imageRel: string }, datasetType?: string): string {
+  if (datasetType === "classification") return `/dataset-asset/${img.imageRel}`;
+  return `/api/images/${encodeURIComponent(img.split)}/${encodeURIComponent(img.name)}`;
+}
 
 export function imageBase(name: string): string {
   const lastDot = name.lastIndexOf(".");

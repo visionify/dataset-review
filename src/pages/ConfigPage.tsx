@@ -126,8 +126,11 @@ export default function ConfigPage() {
     <div className="card" style={{ padding: "1.5rem", maxWidth: "36rem" }}>
       <h1 style={{ fontSize: "1.25rem", marginBottom: "0.75rem" }}>Dataset</h1>
       <p style={{ color: "var(--color-text-muted)", marginBottom: "1rem", fontSize: "0.9rem" }}>
-        Enter the <strong>full path</strong> to your YOLO dataset folder (the one that contains{" "}
-        <code>data.yaml</code>, <code>images/</code>, <code>labels/</code>). The server runs on your machine, so use a path on this computer.
+        Enter the <strong>full path</strong> to your dataset folder. For <strong>YOLO detection</strong>, point to
+        the folder containing <code>data.yaml</code>, <code>images/</code>, <code>labels/</code>. For{" "}
+        <strong>classification</strong>, point to a folder with class sub-folders (e.g.{" "}
+        <code>train/cat/</code>, <code>train/dog/</code>) or a simple folder where each sub-folder is a class.
+        The server runs on your machine, so use a path on this computer.
       </p>
       <div
         onDrop={handleDrop}

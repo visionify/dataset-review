@@ -9,6 +9,8 @@ export interface ImageItem {
   relPath: string;
   imageRel: string;
   bboxArea?: number;
+  className?: string;
+  fileSize?: number;
 }
 
 export interface BBox {

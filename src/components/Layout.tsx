@@ -12,6 +12,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   }, [shouldRefetch]);
 
   const config = summary?.config;
+  const datasetType = summary?.type ?? "detection";
   const hasTrain = config?.train != null;
   const hasVal = config?.val != null;
   const hasTest = config?.test != null;
@@ -23,7 +24,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     ...(hasVal ? [{ to: "/images/val", label: "Validation" }] : []),
     ...(hasTest ? [{ to: "/images/test", label: "Test" }] : []),
     { to: "/validation", label: "Validation checks" },
-    { to: "/settings", label: "Settings" },
+    ...(datasetType === "detection" ? [{ to: "/settings", label: "Settings" }] : []),
     { to: "/config", label: "Dataset" },
   ];
 
@@ -49,7 +50,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             textDecoration: "none",
           }}
         >
-          YOLO Dataset Review
+          {datasetType === "classification" ? "Classification Review" : "YOLO Dataset Review"}
         </Link>
         <nav style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
           {nav.map(({ to, label }) => (

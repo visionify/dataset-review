@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "@/api";
-import type { TagGroup } from "@/api";
+import { api, imageSrc } from "@/api";
+import type { TagGroup, DatasetSummary } from "@/api";
 import type { ClassItem, ImageItem } from "@/types";
 
 export default function ClassesPage() {
-  const [summary, setSummary] = useState<Awaited<ReturnType<typeof api.getSummary>> | null>(null);
+  const [summary, setSummary] = useState<DatasetSummary | null>(null);
   const [samplesByClass, setSamplesByClass] = useState<Record<number, ImageItem[]>>({});
   const [autoTags, setAutoTags] = useState<{ tasks: TagGroup[]; months: TagGroup[]; cameras: TagGroup[] } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -43,11 +43,13 @@ export default function ClassesPage() {
     );
   }
 
+  const datasetType = summary.type ?? "detection";
   const classes = summary.classes ?? [];
   const totalImages = summary.totalImages ?? 0;
   const reviewedCount = summary.reviewedCount ?? 0;
   const pctReviewed = totalImages ? Math.round((reviewedCount / totalImages) * 100) : 0;
   const splitCounts = summary.splitCounts ?? {};
+  const classCounts = summary.classCounts ?? {};
   const missingLabels = summary.missingLabelsCount ?? 0;
   const emptyLabels = summary.emptyLabelsCount ?? 0;
 
@@ -66,10 +68,14 @@ export default function ClassesPage() {
         <StatCard label="Reviewed" value={`${reviewedCount} (${pctReviewed}%)`} color="var(--color-success)" />
         <StatCard label="Remaining" value={totalImages - reviewedCount} color="var(--color-text-muted)" />
         {Object.entries(splitCounts).map(([s, c]) => (
-          <StatCard key={s} label={s === "train" ? "Training" : s === "val" ? "Validation" : s === "test" ? "Test" : s} value={c as number} />
+          <StatCard key={s} label={s === "train" ? "Training" : s === "val" ? "Validation" : s === "test" ? "Test" : s === "all" ? "All" : s} value={c as number} />
         ))}
-        <StatCard label="Missing labels" value={missingLabels} color={missingLabels > 0 ? "var(--color-warning)" : "var(--color-success)"} link="/validation" />
-        <StatCard label="Empty labels" value={emptyLabels} color={emptyLabels > 0 ? "var(--color-warning)" : "var(--color-success)"} link="/validation" />
+        {datasetType === "detection" && (
+          <>
+            <StatCard label="Missing labels" value={missingLabels} color={missingLabels > 0 ? "var(--color-warning)" : "var(--color-success)"} link="/validation" />
+            <StatCard label="Empty labels" value={emptyLabels} color={emptyLabels > 0 ? "var(--color-warning)" : "var(--color-success)"} link="/validation" />
+          </>
+        )}
         <StatCard label="Classes" value={classes.length} />
       </div>
 
@@ -81,7 +87,7 @@ export default function ClassesPage() {
       <h2 style={{ fontSize: "1.2rem", marginTop: "0.5rem" }}>Classes</h2>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
         {classes.map((cls) => (
-          <ClassCard key={cls.id} cls={cls} samples={samplesByClass[cls.id] ?? []} />
+          <ClassCard key={cls.id} cls={cls} samples={samplesByClass[cls.id] ?? []} count={classCounts[cls.name]} datasetType={datasetType} />
         ))}
       </div>
 
@@ -145,12 +151,14 @@ function TagRow({ title, tags, tagType, color }: { title: string; tags: TagGroup
   );
 }
 
-function ClassCard({ cls, samples }: { cls: ClassItem; samples: ImageItem[] }) {
+function ClassCard({ cls, samples, count, datasetType }: { cls: ClassItem; samples: ImageItem[]; count?: number; datasetType: string }) {
   return (
     <div className="card" style={{ padding: "1rem", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" }}>
         <h2 style={{ fontSize: "1rem", fontWeight: 600 }}>{cls.name}</h2>
-        <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>id {cls.id}</span>
+        <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>
+          {count != null ? `${count} images` : `id ${cls.id}`}
+        </span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "4px", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
         {samples.slice(0, 8).map((img, idx) => (
@@ -160,7 +168,7 @@ function ClassCard({ cls, samples }: { cls: ClassItem; samples: ImageItem[] }) {
             state={{ list: samples, index: idx, classId: String(cls.id) }}
             style={{ aspectRatio: "1", display: "block", background: "var(--color-border)" }}
           >
-            <img src={api.imageUrl(img.split, img.name)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} loading="lazy" />
+            <img src={imageSrc(img, datasetType)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} loading="lazy" />
           </Link>
         ))}
       </div>

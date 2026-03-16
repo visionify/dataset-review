@@ -112,6 +112,82 @@ async function findCvatDataDir(datasetRoot) {
   return null;
 }
 
+// ── Classification Detection ──────────────────────────────────────────────────
+
+const CLS_IGNORE_DIRS = new Set([
+  "review", ".git", "node_modules", ".venv", "__pycache__", ".idea", ".vscode",
+  "images", "labels", ".ipynb_checkpoints", "runs", "weights", "docs",
+]);
+
+async function tryClassificationDetection(datasetRoot) {
+  // Case 1: YOLO classification — train/ or training/ with subdirectories containing images
+  for (const trainName of ["train", "training"]) {
+    const trainDir = path.join(datasetRoot, trainName);
+    if (!await dirExists(trainDir)) continue;
+    try {
+      const entries = await fs.readdir(trainDir, { withFileTypes: true });
+      const subdirs = entries.filter(e => e.isDirectory());
+      if (subdirs.length === 0) continue;
+      // Check that at least one subdir has images (not standard YOLO structure like images/ or labels/)
+      let hasClassFolders = false;
+      for (const sd of subdirs) {
+        if (sd.name === "images" || sd.name === "labels") continue;
+        if (await dirHasImages(path.join(trainDir, sd.name))) { hasClassFolders = true; break; }
+      }
+      if (!hasClassFolders) continue;
+      // Collect class folders from train split
+      const classFolders = [];
+      for (const sd of subdirs) {
+        if (sd.name === "images" || sd.name === "labels") continue;
+        if (await dirHasImages(path.join(trainDir, sd.name))) classFolders.push(sd.name);
+      }
+      classFolders.sort();
+      const names = Object.fromEntries(classFolders.map((name, i) => [i, name]));
+      // Detect val and test splits
+      let valSplit = null;
+      for (const vn of ["val", "valid"]) {
+        if (await dirExists(path.join(datasetRoot, vn))) { valSplit = vn; break; }
+      }
+      let testSplit = null;
+      if (await dirExists(path.join(datasetRoot, "test"))) testSplit = "test";
+      return {
+        type: "classification",
+        names,
+        classFolders,
+        train: trainName,
+        val: valSplit,
+        test: testSplit,
+        labelsDir: { train: null, val: null, test: null },
+      };
+    } catch {}
+  }
+
+  // Case 2: Simple classification — root has subdirectories (excluding ignored) with images
+  try {
+    const entries = await fs.readdir(datasetRoot, { withFileTypes: true });
+    const subdirs = entries.filter(e => e.isDirectory() && !CLS_IGNORE_DIRS.has(e.name));
+    const classFolders = [];
+    for (const sd of subdirs) {
+      if (await dirHasImages(path.join(datasetRoot, sd.name))) classFolders.push(sd.name);
+    }
+    if (classFolders.length >= 1) {
+      classFolders.sort();
+      const names = Object.fromEntries(classFolders.map((name, i) => [i, name]));
+      return {
+        type: "classification",
+        names,
+        classFolders,
+        train: null,
+        val: null,
+        test: null,
+        labelsDir: { train: null, val: null, test: null },
+      };
+    }
+  } catch {}
+
+  return null;
+}
+
 async function resolveConfig(datasetRoot) {
   if (_cfgCache && _cfgCachePath === datasetRoot) return _cfgCache;
 
@@ -121,6 +197,7 @@ async function resolveConfig(datasetRoot) {
 
   if (cvatNames && cvatDataDir) {
     const cfg = {
+      type: "detection",
       names: cvatNames,
       train: cvatDataDir,
       val: null,
@@ -152,7 +229,31 @@ async function resolveConfig(datasetRoot) {
   const valLabels   = await findDir(datasetRoot, ["labels/val", "labels/valid", "valid/labels", "val/labels"], false);
   const testLabels  = await findDir(datasetRoot, ["labels/test", "test/labels"], false);
 
+  if (trainImgs || valImgs || testImgs) {
+    const cfg = {
+      type: "detection",
+      names,
+      train: trainImgs,
+      val: valImgs,
+      test: testImgs,
+      labelsDir: { train: trainLabels, val: valLabels, test: testLabels },
+    };
+    _cfgCache = cfg;
+    _cfgCachePath = datasetRoot;
+    return cfg;
+  }
+
+  // Try classification detection
+  const clsCfg = await tryClassificationDetection(datasetRoot);
+  if (clsCfg) {
+    _cfgCache = clsCfg;
+    _cfgCachePath = datasetRoot;
+    return clsCfg;
+  }
+
+  // Fallback: detection config
   const cfg = {
+    type: "detection",
     names,
     train: trainImgs,
     val: valImgs,
@@ -329,6 +430,89 @@ function splitFromImageRel(config, imageRel) {
   return "train";
 }
 
+// ── Classification Helpers ────────────────────────────────────────────────────
+
+function classificationSplits(config) {
+  const splits = activeSplits(config);
+  return splits.length > 0 ? splits : [null];
+}
+
+async function collectClassificationImages(datasetRoot, config, opts = {}) {
+  const { className, split, sort, reviewed: reviewedFilter } = opts;
+  const splits = classificationSplits(config);
+  const items = [];
+
+  for (const s of splits) {
+    const folders = className ? [className] : config.classFolders;
+    for (const cls of folders) {
+      let dir;
+      if (s) {
+        dir = path.join(datasetRoot, config[s], cls);
+      } else {
+        dir = path.join(datasetRoot, cls);
+      }
+      try {
+        const files = await listImagesInDir(dir);
+        for (const f of files) {
+          let imageRel;
+          if (s) {
+            imageRel = `${config[s]}/${cls}/${f}`;
+          } else {
+            imageRel = `${cls}/${f}`;
+          }
+          items.push({
+            split: s || "all",
+            className: cls,
+            name: f,
+            imageRel,
+            relPath: imageRel,
+          });
+        }
+      } catch {}
+    }
+  }
+
+  // Filter by split
+  let filtered = items;
+  if (split && split !== "all") {
+    filtered = filtered.filter(img => img.split === split);
+  }
+
+  // Filter by reviewed
+  if (reviewedFilter === "no" || reviewedFilter === "yes") {
+    const reviewedSet = await readReviewedSet(datasetRoot);
+    filtered = filtered.filter(img => {
+      const key = classificationReviewKey(img.imageRel);
+      return reviewedFilter === "no" ? !reviewedSet.has(key) : reviewedSet.has(key);
+    });
+  }
+
+  // Sort by size if requested
+  if (sort === "size_asc" || sort === "size_desc") {
+    for (const item of filtered) {
+      try {
+        const stat = await fs.stat(path.join(datasetRoot, item.imageRel));
+        item.fileSize = stat.size;
+      } catch {
+        item.fileSize = 0;
+      }
+    }
+    if (sort === "size_asc") filtered.sort((a, b) => a.fileSize - b.fileSize);
+    else filtered.sort((a, b) => b.fileSize - a.fileSize);
+  }
+
+  return filtered;
+}
+
+function classificationReviewKey(imageRel) {
+  const ext = path.extname(imageRel);
+  return ext ? imageRel.slice(0, -ext.length) : imageRel;
+}
+
+async function classificationImagePath(datasetRoot, config, imageRel) {
+  return path.join(datasetRoot, imageRel);
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 app.get("/api/config", async (_req, res) => {
@@ -357,6 +541,56 @@ app.get("/api/dataset/summary", async (_req, res) => {
     const config = await resolveConfig(datasetRoot);
     const reviewed = await readReviewedSet(datasetRoot);
     const classes = Object.entries(config.names).map(([id, name]) => ({ id: parseInt(id, 10), name: String(name) })).sort((a, b) => a.id - b.id);
+
+    if (config.type === "classification") {
+      const splitCounts = {};
+      let totalImages = 0;
+      const classCounts = {};
+      const splits = classificationSplits(config);
+      for (const s of splits) {
+        let splitTotal = 0;
+        for (const cls of config.classFolders) {
+          let dir;
+          if (s) {
+            dir = path.join(datasetRoot, config[s], cls);
+          } else {
+            dir = path.join(datasetRoot, cls);
+          }
+          try {
+            const files = await listImagesInDir(dir);
+            const count = files.length;
+            splitTotal += count;
+            classCounts[cls] = (classCounts[cls] || 0) + count;
+          } catch {}
+        }
+        splitCounts[s || "all"] = splitTotal;
+        totalImages += splitTotal;
+      }
+
+      // Count reviewed
+      let reviewedCount = 0;
+      const allImages = await collectClassificationImages(datasetRoot, config);
+      for (const img of allImages) {
+        const key = classificationReviewKey(img.imageRel);
+        if (reviewed.has(key)) reviewedCount++;
+      }
+
+      res.json({
+        configured: true,
+        type: "classification",
+        classes,
+        config: { train: config.train, val: config.val, test: config.test, names: config.names, classFolders: config.classFolders },
+        totalImages,
+        reviewedCount,
+        splitCounts,
+        classCounts,
+        missingLabelsCount: 0,
+        emptyLabelsCount: 0,
+      });
+      return;
+    }
+
+    // Detection
     const splitCounts = {};
     let totalImages = 0;
     for (const s of activeSplits(config)) {
@@ -373,7 +607,7 @@ app.get("/api/dataset/summary", async (_req, res) => {
         if (!content.split("\n").filter(l => l.trim()).length) emptyLabelsCount++;
       } catch { missingLabelsCount++; }
     }
-    res.json({ configured: true, classes, config: { train: config.train, val: config.val, test: config.test, names: config.names }, totalImages, reviewedCount: reviewed.size, splitCounts, missingLabelsCount, emptyLabelsCount });
+    res.json({ configured: true, type: "detection", classes, config: { train: config.train, val: config.val, test: config.test, names: config.names }, totalImages, reviewedCount: reviewed.size, splitCounts, missingLabelsCount, emptyLabelsCount });
   } catch (e) {
     res.status(500).json({ error: String(e.message), configured: true });
   }
@@ -384,6 +618,39 @@ app.get("/api/auto-tags", async (_req, res) => {
   if (!datasetRoot.trim()) return res.json({ tasks: [], months: [], cameras: [] });
   try {
     const config = await resolveConfig(datasetRoot);
+
+    if (config.type === "classification") {
+      const allImages = await collectClassificationImages(datasetRoot, config);
+      const byImage = {};
+      const tasks = {}, months = {}, cameras = {};
+      for (const img of allImages) {
+        const tags = parseImageTags(img.name);
+        byImage[img.imageRel] = tags;
+        const entry = { split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath, className: img.className };
+        if (!tasks[tags.task]) tasks[tags.task] = [];
+        tasks[tags.task].push(entry);
+        if (tags.monthYear) {
+          if (!months[tags.monthYear]) months[tags.monthYear] = [];
+          months[tags.monthYear].push(entry);
+        }
+        if (tags.camera) {
+          if (!cameras[tags.camera]) cameras[tags.camera] = [];
+          cameras[tags.camera].push(entry);
+        }
+      }
+      const taskList = Object.entries(tasks).map(([name, imgs]) => ({ name, count: imgs.length }))
+        .sort((a, b) => {
+          const na = parseInt(a.name.replace("task-", ""), 10);
+          const nb = parseInt(b.name.replace("task-", ""), 10);
+          if (!isNaN(na) && !isNaN(nb)) return na - nb;
+          return a.name.localeCompare(b.name);
+        });
+      const monthList = Object.entries(months).map(([name, imgs]) => ({ name, count: imgs.length })).sort((a, b) => a.name.localeCompare(b.name));
+      const cameraList = Object.entries(cameras).map(([name, imgs]) => ({ name, count: imgs.length })).sort((a, b) => b.count - a.count).slice(0, 50);
+      res.json({ tasks: taskList, months: monthList, cameras: cameraList });
+      return;
+    }
+
     const idx = await buildTagIndex(datasetRoot, config);
     const tasks = Object.entries(idx.tasks).map(([name, imgs]) => ({ name, count: imgs.length }))
       .sort((a, b) => {
@@ -403,6 +670,30 @@ app.get("/api/images", async (req, res) => {
   if (!datasetRoot.trim()) return res.json({ images: [], total: 0 });
   try {
     const config = await resolveConfig(datasetRoot);
+
+    // Classification branch
+    if (config.type === "classification") {
+      const split = req.query.split || "all";
+      const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+      const limit = Math.min(10000, Math.max(1, parseInt(req.query.limit, 10) || 48));
+      const reviewedFilter = req.query.reviewed;
+      const className = req.query.className || undefined;
+      const sort = req.query.sort || "";
+
+      const items = await collectClassificationImages(datasetRoot, config, {
+        className,
+        split,
+        sort,
+        reviewed: reviewedFilter,
+      });
+
+      const start = (page - 1) * limit;
+      const paged = items.slice(start, start + limit);
+      res.json({ images: paged, total: items.length });
+      return;
+    }
+
+    // Detection branch
     const split = req.query.split || "all";
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(10000, Math.max(1, parseInt(req.query.limit, 10) || 48));
@@ -550,6 +841,21 @@ app.get("/api/class/:id/images", async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(10000, Math.max(1, parseInt(req.query.limit, 10) || 24));
     const sort = req.query.sort || "";
+
+    // Classification branch
+    if (config.type === "classification") {
+      const className = config.names[classId];
+      if (!className) return res.json({ images: [], total: 0 });
+      const items = await collectClassificationImages(datasetRoot, config, { className, sort });
+      if (sort === "size_asc" || sort === "size_desc") {
+        // Already sorted by collectClassificationImages
+      }
+      const start = (page - 1) * limit;
+      res.json({ images: items.slice(start, start + limit), total: items.length });
+      return;
+    }
+
+    // Detection branch
     const index = await buildClassIndex(datasetRoot, config);
     const rels = Object.entries(index).filter(([, ids]) => ids.includes(classId)).map(([rel]) => rel);
     const images = [];
@@ -595,6 +901,20 @@ app.get("/api/class/:id/samples", async (req, res) => {
     const config = await resolveConfig(datasetRoot);
     const classId = parseInt(req.params.id, 10);
     const limit = Math.min(12, Math.max(1, parseInt(req.query.limit, 10) || 8));
+
+    // Classification branch
+    if (config.type === "classification") {
+      const className = config.names[classId];
+      if (!className) return res.json({ samples: [] });
+      const items = await collectClassificationImages(datasetRoot, config, { className });
+      const samples = items.slice(0, limit).map(img => ({
+        split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath, className: img.className,
+      }));
+      res.json({ samples });
+      return;
+    }
+
+    // Detection branch
     const index = await buildClassIndex(datasetRoot, config);
     const rels = Object.entries(index).filter(([, ids]) => ids.includes(classId)).map(([rel]) => rel).slice(0, limit);
     const samples = rels.map(rel => {
@@ -633,6 +953,10 @@ app.get("/dataset-asset/*", (req, res) => {
 app.get("/api/annotations/:split/:base", async (req, res) => {
   const datasetRoot = getDatasetPath();
   const config = await resolveConfig(datasetRoot);
+
+  // Classification guard
+  if (config.type === "classification") return res.json([]);
+
   const { split, base: baseParam } = req.params;
   const base = stripImageExt(baseParam);
   const labelsRel = config.labelsDir?.[split];
@@ -651,6 +975,10 @@ app.get("/api/annotations/:split/:base", async (req, res) => {
 app.put("/api/annotations/:split/:base", async (req, res) => {
   const datasetRoot = getDatasetPath();
   const config = await resolveConfig(datasetRoot);
+
+  // Classification guard
+  if (config.type === "classification") return res.json({ ok: true });
+
   const { split, base: baseParam } = req.params;
   const base = stripImageExt(baseParam);
   const labelsRel = config.labelsDir?.[split];
@@ -700,6 +1028,47 @@ app.get("/api/validation", async (_req, res) => {
   if (!datasetRoot.trim()) return res.json({ checks: [] });
   try {
     const config = await resolveConfig(datasetRoot);
+
+    // Classification branch
+    if (config.type === "classification") {
+      const allImages = await collectClassificationImages(datasetRoot, config);
+
+      // Duplicate images by MD5
+      const hashMap = {};
+      for (const img of allImages) {
+        const imgPath = path.join(datasetRoot, img.imageRel);
+        try {
+          const buf = await fs.readFile(imgPath);
+          const hash = createHash("md5").update(buf).digest("hex");
+          if (!hashMap[hash]) hashMap[hash] = [];
+          hashMap[hash].push({ split: img.split, name: img.name, imageRel: img.imageRel, relPath: img.relPath, className: img.className });
+        } catch {}
+      }
+      const duplicateImages = [];
+      let totalDupImages = 0;
+      for (const [hash, items] of Object.entries(hashMap)) {
+        if (items.length > 1) {
+          totalDupImages += items.length - 1;
+          for (const item of items.slice(1)) {
+            duplicateImages.push({ ...item, hash, originalName: items[0].name, originalSplit: items[0].split });
+          }
+        }
+      }
+
+      // Class distribution
+      const classCounts = {};
+      for (const img of allImages) {
+        classCounts[img.className] = (classCounts[img.className] || 0) + 1;
+      }
+
+      res.json({ checks: [
+        { id: "duplicate_images", name: "Duplicate images (by MD5)", count: duplicateImages.length, severity: duplicateImages.length ? "warning" : "ok", detail: duplicateImages, extra: { totalDupImages } },
+        { id: "class_balance", name: "Class distribution", count: Object.keys(classCounts).length, severity: "ok", detail: classCounts },
+      ]});
+      return;
+    }
+
+    // Detection branch
     const images = await collectAllImages(datasetRoot, config);
     const missingLabels = [], emptyLabels = [], duplicateLabels = [], smallBboxes = [], classCounts = {};
     let totalDupLines = 0;
@@ -924,9 +1293,16 @@ app.patch("/api/reviewed", async (req, res) => {
   const datasetRoot = getDatasetPath();
   if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
   await ensureReviewDirs(datasetRoot);
-  const { split, base, reviewed: mark } = req.body;
-  if (!split || base == null) return res.status(400).json({ error: "split and base required" });
-  const key = `${split}/${typeof base === "string" ? base.replace(/\.[^.]+$/, "") : base}`;
+  const { split, base, reviewed: mark, reviewKey } = req.body;
+
+  let key;
+  if (reviewKey) {
+    key = reviewKey;
+  } else {
+    if (!split || base == null) return res.status(400).json({ error: "split and base required" });
+    key = `${split}/${typeof base === "string" ? base.replace(/\.[^.]+$/, "") : base}`;
+  }
+
   const p = getReviewedPath(datasetRoot);
   let data = { reviewed: [] };
   try { data = JSON.parse(await fs.readFile(p, "utf8")); if (!Array.isArray(data.reviewed)) data.reviewed = []; } catch {}
@@ -959,6 +1335,25 @@ app.delete("/api/images/:split/:name", async (req, res) => {
   if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
   const config = await resolveConfig(datasetRoot);
   const { split, name } = req.params;
+
+  // Classification support
+  if (config.type === "classification") {
+    const imageRel = req.query.imageRel;
+    if (imageRel) {
+      const imagePath = path.join(datasetRoot, imageRel);
+      if (!imagePath.startsWith(path.resolve(datasetRoot))) return res.status(403).json({ error: "forbidden" });
+      try { await fs.unlink(imagePath); } catch (e) { if (e.code !== "ENOENT") return res.status(500).json({ error: String(e.message) }); }
+      // Remove from reviewed
+      const reviewKeyVal = classificationReviewKey(imageRel);
+      try {
+        const d = JSON.parse(await fs.readFile(getReviewedPath(datasetRoot), "utf8"));
+        if (Array.isArray(d.reviewed)) { d.reviewed = d.reviewed.filter(k => k !== reviewKeyVal); await fs.writeFile(getReviewedPath(datasetRoot), JSON.stringify(d, null, 2), "utf8"); }
+      } catch {}
+      invalidateConfigCache();
+      return res.json({ ok: true });
+    }
+  }
+
   const imagesRel = config[split];
   if (!imagesRel) return res.status(404).json({ error: "split not found" });
   const imagePath = path.join(datasetRoot, imagesRel, name);
@@ -974,6 +1369,77 @@ app.delete("/api/images/:split/:name", async (req, res) => {
   } catch {}
   invalidateConfigCache();
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Classification endpoints
+// ---------------------------------------------------------------------------
+
+app.post("/api/classification/move", async (req, res) => {
+  const datasetRoot = getDatasetPath();
+  if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
+  try {
+    const config = await resolveConfig(datasetRoot);
+    if (config.type !== "classification") return res.status(400).json({ error: "not a classification dataset" });
+    const { imageRels, targetClassName } = req.body;
+    if (!Array.isArray(imageRels) || !targetClassName) return res.status(400).json({ error: "imageRels and targetClassName required" });
+
+    let moved = 0;
+    for (const imageRel of imageRels) {
+      const srcPath = path.join(datasetRoot, imageRel);
+      if (!srcPath.startsWith(path.resolve(datasetRoot))) continue;
+      const fileName = path.basename(imageRel);
+      const parts = imageRel.split("/");
+      let destRel;
+      if (config.train || config.val || config.test) {
+        // YOLO cls: preserve split dir, change class folder
+        // imageRel = "train/cat/img.jpg" -> "train/dog/img.jpg"
+        const splitDir = parts[0];
+        destRel = `${splitDir}/${targetClassName}/${fileName}`;
+      } else {
+        // Simple cls: "cat/img.jpg" -> "dog/img.jpg"
+        destRel = `${targetClassName}/${fileName}`;
+      }
+      const destPath = path.join(datasetRoot, destRel);
+      if (!destPath.startsWith(path.resolve(datasetRoot))) continue;
+      await fs.mkdir(path.dirname(destPath), { recursive: true });
+      try {
+        await fs.rename(srcPath, destPath);
+        moved++;
+      } catch {}
+    }
+    invalidateConfigCache();
+    res.json({ ok: true, moved });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+app.post("/api/classification/delete-images", async (req, res) => {
+  const datasetRoot = getDatasetPath();
+  if (!datasetRoot.trim()) return res.status(400).json({ error: "no dataset" });
+  try {
+    const config = await resolveConfig(datasetRoot);
+    if (config.type !== "classification") return res.status(400).json({ error: "not a classification dataset" });
+    const { imageRels } = req.body;
+    if (!Array.isArray(imageRels)) return res.status(400).json({ error: "imageRels required" });
+
+    let deleted = 0;
+    for (const imageRel of imageRels) {
+      const filePath = path.join(datasetRoot, imageRel);
+      if (!filePath.startsWith(path.resolve(datasetRoot))) continue;
+      try {
+        await fs.unlink(filePath);
+        deleted++;
+      } catch {}
+      // Remove from reviewed
+      const reviewKeyVal = classificationReviewKey(imageRel);
+      try {
+        const d = JSON.parse(await fs.readFile(getReviewedPath(datasetRoot), "utf8"));
+        if (Array.isArray(d.reviewed)) { d.reviewed = d.reviewed.filter(k => k !== reviewKeyVal); await fs.writeFile(getReviewedPath(datasetRoot), JSON.stringify(d, null, 2), "utf8"); }
+      } catch {}
+    }
+    invalidateConfigCache();
+    res.json({ ok: true, deleted });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
 
 // ---------------------------------------------------------------------------

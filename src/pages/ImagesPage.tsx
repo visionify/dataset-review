@@ -1,10 +1,16 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { api, imageBase } from "@/api";
+import { api, imageBase, imageSrc } from "@/api";
 import type { ClassItem, ImageItem } from "@/types";
 
 const PAGE_SIZE = 48;
-type SortMode = "" | "area_asc" | "area_desc";
+type SortMode = "" | "area_asc" | "area_desc" | "size_asc" | "size_desc";
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export default function ImagesPage() {
   const { split } = useParams<{ split: string }>();
@@ -12,6 +18,7 @@ export default function ImagesPage() {
   const tagType = searchParams.get("tagType") || "";
   const tagValue = searchParams.get("tag") || "";
   const filterClassId = searchParams.get("classId") || "";
+  const filterClassName = searchParams.get("className") || "";
   const sortBy = (searchParams.get("sort") || "") as SortMode;
   const [summary, setSummary] = useState<Awaited<ReturnType<typeof api.getSummary>> | null>(null);
   const [classes, setClasses] = useState<ClassItem[]>([]);
@@ -26,9 +33,22 @@ export default function ImagesPage() {
   const [showAll, setShowAll] = useState(false);
   const [allImages, setAllImages] = useState<ImageItem[]>([]);
   const [loadingAll, setLoadingAll] = useState(false);
+  const [moveTarget, setMoveTarget] = useState("");
+  const [moving, setMoving] = useState(false);
 
   const effectiveSplit = split === "all" || !split ? "all" : split;
   const selectMode = selected.size > 0;
+  const datasetType = summary?.type ?? "detection";
+  const isCls = datasetType === "classification";
+
+  const setFilterClassNameParam = (v: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (v) next.set("className", v); else next.delete("className");
+      next.delete("sort");
+      return next;
+    }, { replace: true });
+  };
 
   const setFilterClassIdParam = (v: string) => {
     setSearchParams(prev => {
@@ -57,18 +77,24 @@ export default function ImagesPage() {
   const loadPage = useCallback(() => {
     if (!summary?.configured) { setLoading(false); return; }
     setLoading(true);
-    api.getImages({ split: effectiveSplit, page: page + 1, limit: PAGE_SIZE, reviewed: filterReviewed === "no" ? "no" : undefined, tagType: tagType || undefined, tag: tagValue || undefined, classId: classIdNum, sort: sortBy || undefined })
+    api.getImages({
+      split: effectiveSplit, page: page + 1, limit: PAGE_SIZE,
+      reviewed: filterReviewed === "no" ? "no" : undefined,
+      tagType: tagType || undefined, tag: tagValue || undefined,
+      classId: classIdNum, sort: sortBy || undefined,
+      className: filterClassName || undefined,
+    })
       .then(r => { setImages(r.images); setTotal(r.total); })
       .finally(() => setLoading(false));
-  }, [summary?.configured, effectiveSplit, page, filterReviewed, tagType, tagValue, classIdNum, sortBy]);
+  }, [summary?.configured, effectiveSplit, page, filterReviewed, tagType, tagValue, classIdNum, sortBy, filterClassName]);
 
   useEffect(() => { loadPage(); }, [loadPage]);
 
-  useEffect(() => { setSelected(new Set()); setShowAll(false); setAllImages([]); setPage(0); }, [effectiveSplit, filterReviewed, tagType, tagValue, filterClassId, sortBy]);
+  useEffect(() => { setSelected(new Set()); setShowAll(false); setAllImages([]); setPage(0); }, [effectiveSplit, filterReviewed, tagType, tagValue, filterClassId, filterClassName, sortBy]);
   useEffect(() => { if (!showAll) setSelected(new Set()); }, [page]);
 
   const toggleSelect = (img: ImageItem) => {
-    const key = `${img.split}/${img.name}`;
+    const key = img.imageRel;
     setSelected(prev => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key); else next.add(key);
@@ -82,7 +108,7 @@ export default function ImagesPage() {
     if (selected.size === displayImages.length) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(displayImages.map(img => `${img.split}/${img.name}`)));
+      setSelected(new Set(displayImages.map(img => img.imageRel)));
     }
   };
 
@@ -93,7 +119,13 @@ export default function ImagesPage() {
       let pg = 1;
       let hasMore = true;
       while (hasMore) {
-        const r = await api.getImages({ split: effectiveSplit, page: pg, limit: 5000, reviewed: filterReviewed === "no" ? "no" : undefined, tagType: tagType || undefined, tag: tagValue || undefined, classId: classIdNum, sort: sortBy || undefined });
+        const r = await api.getImages({
+          split: effectiveSplit, page: pg, limit: 5000,
+          reviewed: filterReviewed === "no" ? "no" : undefined,
+          tagType: tagType || undefined, tag: tagValue || undefined,
+          classId: classIdNum, sort: sortBy || undefined,
+          className: filterClassName || undefined,
+        });
         accumulated.push(...r.images);
         hasMore = r.images.length === 5000;
         pg++;
@@ -103,23 +135,25 @@ export default function ImagesPage() {
       setShowAll(true);
     } catch {}
     finally { setLoadingAll(false); }
-  }, [effectiveSplit, filterReviewed, tagType, tagValue, classIdNum, sortBy]);
+  }, [effectiveSplit, filterReviewed, tagType, tagValue, classIdNum, sortBy, filterClassName]);
 
   const handleDeleteSelected = async () => {
     if (!selected.size) return;
-    if (!window.confirm(`Delete ${selected.size} image(s) and their labels? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete ${selected.size} image(s)? This cannot be undone.`)) return;
     setDeleting(true);
     try {
-      for (const key of selected) {
-        const slashIdx = key.indexOf("/");
-        const s = key.slice(0, slashIdx);
-        const name = key.slice(slashIdx + 1);
-        await api.deleteImage(s, name);
+      if (isCls) {
+        await api.classificationDeleteImages([...selected]);
+      } else {
+        for (const key of selected) {
+          const img = displayImages.find(i => i.imageRel === key);
+          if (img) await api.deleteImage(img.split, img.name);
+        }
       }
       setSelected(new Set());
       if (showAll) {
         setAllImages(prev => {
-          const remaining = prev.filter(img => !selected.has(`${img.split}/${img.name}`));
+          const remaining = prev.filter(img => !selected.has(img.imageRel));
           setTotal(remaining.length);
           return remaining;
         });
@@ -130,6 +164,28 @@ export default function ImagesPage() {
       api.getReviewed().then(r => setReviewedSet(new Set(r.reviewed))).catch(() => {});
     } catch {}
     finally { setDeleting(false); }
+  };
+
+  const handleMoveSelected = async () => {
+    if (!selected.size || !moveTarget) return;
+    if (!window.confirm(`Move ${selected.size} image(s) to class "${moveTarget}"?`)) return;
+    setMoving(true);
+    try {
+      await api.classificationMoveImages([...selected], moveTarget);
+      setSelected(new Set());
+      setMoveTarget("");
+      if (showAll) {
+        setAllImages(prev => {
+          const remaining = prev.filter(img => !selected.has(img.imageRel));
+          setTotal(remaining.length);
+          return remaining;
+        });
+      } else {
+        loadPage();
+      }
+      api.getSummary().then(setSummary).catch(() => {});
+    } catch {}
+    finally { setMoving(false); }
   };
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -168,7 +224,21 @@ export default function ImagesPage() {
             <input type="checkbox" checked={filterReviewed === "no"} onChange={e => { setFilterReviewed(e.target.checked ? "no" : "all"); setPage(0); }} />
             Not reviewed only
           </label>
-          {classes.length > 0 && (
+          {/* Class filter */}
+          {isCls && classes.length > 0 && (
+            <select
+              className="input"
+              style={{ width: "auto", padding: "0.3rem 0.4rem", fontSize: "0.85rem" }}
+              value={filterClassName}
+              onChange={e => setFilterClassNameParam(e.target.value)}
+            >
+              <option value="">All classes</option>
+              {classes.map(c => (
+                <option key={c.id} value={c.name}>{c.name}</option>
+              ))}
+            </select>
+          )}
+          {!isCls && classes.length > 0 && (
             <select
               className="input"
               style={{ width: "auto", padding: "0.3rem 0.4rem", fontSize: "0.85rem" }}
@@ -181,7 +251,8 @@ export default function ImagesPage() {
               ))}
             </select>
           )}
-          {filterClassId && (
+          {/* Sort */}
+          {(isCls || filterClassId) && (
             <select
               className="input"
               style={{ width: "auto", padding: "0.3rem 0.4rem", fontSize: "0.85rem" }}
@@ -189,8 +260,10 @@ export default function ImagesPage() {
               onChange={e => setSortByParam(e.target.value as SortMode)}
             >
               <option value="">Default order</option>
-              <option value="area_asc">BBox area (smallest first)</option>
-              <option value="area_desc">BBox area (largest first)</option>
+              {isCls && <option value="size_asc">File size (smallest first)</option>}
+              {isCls && <option value="size_desc">File size (largest first)</option>}
+              {!isCls && <option value="area_asc">BBox area (smallest first)</option>}
+              {!isCls && <option value="area_desc">BBox area (largest first)</option>}
             </select>
           )}
         </div>
@@ -221,11 +294,24 @@ export default function ImagesPage() {
             <button className="btn btn-ghost" style={{ padding: "0.3rem 0.6rem", color: "var(--color-danger)" }} onClick={handleDeleteSelected} disabled={deleting}>
               {deleting ? "Deleting…" : `Delete ${selected.size} image${selected.size > 1 ? "s" : ""}`}
             </button>
+            {isCls && classes.length > 1 && (
+              <>
+                <select className="input" style={{ width: "auto", padding: "0.25rem 0.4rem", fontSize: "0.85rem" }} value={moveTarget} onChange={e => setMoveTarget(e.target.value)}>
+                  <option value="">Move to…</option>
+                  {classes.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </select>
+                {moveTarget && (
+                  <button className="btn btn-primary" style={{ padding: "0.3rem 0.6rem" }} onClick={handleMoveSelected} disabled={moving}>
+                    {moving ? "Moving…" : "Move"}
+                  </button>
+                )}
+              </>
+            )}
             <button className="btn btn-ghost" style={{ padding: "0.3rem 0.6rem" }} onClick={() => setSelected(new Set())}>Cancel</button>
           </>
         )}
         {!selectMode && (
-          <span style={{ color: "var(--color-text-muted)", fontSize: "0.85rem" }}>Click thumbnails to select for bulk delete</span>
+          <span style={{ color: "var(--color-text-muted)", fontSize: "0.85rem" }}>Click thumbnails to select for bulk actions</span>
         )}
       </div>
 
@@ -234,14 +320,16 @@ export default function ImagesPage() {
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "0.6rem" }}>
           {displayImages.map((img, idx) => {
-            const reviewKey = `${img.split}/${imageBase(img.name)}`;
-            const selectKey = `${img.split}/${img.name}`;
+            const reviewKey = isCls
+              ? (img.imageRel ? img.imageRel.replace(/\.[^.]+$/, "") : `${img.split}/${imageBase(img.name)}`)
+              : `${img.split}/${imageBase(img.name)}`;
+            const selectKey = img.imageRel;
             const isReviewed = reviewedSet.has(reviewKey);
             const isSelected = selected.has(selectKey);
             const globalIdx = showAll ? idx : page * PAGE_SIZE + idx;
             return (
               <div
-                key={`${img.split}/${img.name}`}
+                key={img.imageRel}
                 className="card"
                 style={{
                   padding: 0, overflow: "hidden", position: "relative", cursor: "pointer",
@@ -266,20 +354,20 @@ export default function ImagesPage() {
                     display: "flex", alignItems: "center", justifyContent: "center",
                     color: "#fff", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer",
                   }}
-                  title="Select for deletion"
+                  title="Select"
                 >
                   {isSelected ? "✓" : ""}
                 </span>
 
                 <Link
                   to={`/image/${encodeURIComponent(img.split)}/${encodeURIComponent(img.name)}`}
-                  state={{ fromSplit: effectiveSplit, filterReviewed: filterReviewed === "no" ? "no" : undefined, startIndex: globalIdx, tagType: tagType || undefined, tag: tagValue || undefined, classId: filterClassId || undefined, classSort: sortBy || undefined }}
+                  state={{ fromSplit: effectiveSplit, filterReviewed: filterReviewed === "no" ? "no" : undefined, startIndex: globalIdx, tagType: tagType || undefined, tag: tagValue || undefined, classId: filterClassId || undefined, className: filterClassName || undefined, classSort: sortBy || undefined }}
                   style={{ textDecoration: "none", color: "inherit" }}
                   onClick={(e) => { if (selectMode) e.preventDefault(); }}
                 >
                   <div style={{ aspectRatio: "1", background: "var(--color-border)", position: "relative" }}>
-                    <img src={api.imageUrl(img.split, img.name)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} loading="lazy" />
-                    {img.bboxArea != null && (
+                    <img src={imageSrc(img, datasetType)} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} loading="lazy" />
+                    {img.bboxArea != null && !isCls && (
                       <span style={{
                         position: "absolute", bottom: 4, right: 4,
                         background: img.bboxArea < 0.001 ? "rgba(239,68,68,0.85)" : img.bboxArea < 0.005 ? "rgba(234,179,8,0.85)" : "rgba(0,0,0,0.55)",
@@ -288,8 +376,19 @@ export default function ImagesPage() {
                         {(img.bboxArea * 100).toFixed(2)}%
                       </span>
                     )}
+                    {img.fileSize != null && (
+                      <span style={{
+                        position: "absolute", bottom: 4, right: 4,
+                        background: "rgba(0,0,0,0.55)", color: "#fff", fontSize: "0.65rem", padding: "1px 4px", borderRadius: 3, fontVariantNumeric: "tabular-nums",
+                      }}>
+                        {formatFileSize(img.fileSize)}
+                      </span>
+                    )}
                   </div>
-                  <div style={{ padding: "0.3rem 0.4rem", fontSize: "0.75rem", color: "var(--color-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{img.name}</div>
+                  <div style={{ padding: "0.3rem 0.4rem", fontSize: "0.75rem", color: "var(--color-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {img.className && <span style={{ fontWeight: 600, marginRight: "0.3rem" }}>{img.className}/</span>}
+                    {img.name}
+                  </div>
                 </Link>
 
                 {isReviewed && (
